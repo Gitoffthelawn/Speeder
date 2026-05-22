@@ -153,6 +153,16 @@ describe("shared helpers", () => {
     });
 
     expect(
+      importExportUtils.extractImportSettings({
+        subtitleNudgeEnabledByDefault: false
+      })
+    ).toEqual({
+      isWrappedBackup: false,
+      settings: { subtitleNudgeEnabledByDefault: false },
+      localSettings: null
+    });
+
+    expect(
       importExportUtils.extractImportSettings({ enabled: true })
     ).toEqual({
       isWrappedBackup: false,

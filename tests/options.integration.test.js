@@ -29,6 +29,7 @@ describe("options page", () => {
       sync: {
         rememberSpeed: true,
         enabled: false,
+        subtitleNudgeEnabledByDefault: false,
         popupMatchHoverControls: false,
         popupControllerButtons: ["rewind", "settings", "advance", "advance"],
         keyBindings: [
@@ -39,6 +40,7 @@ describe("options page", () => {
           {
             pattern: "youtube.com",
             enabled: true,
+            subtitleNudgeEnabledByDefault: false,
             showPopupControlBar: false,
             popupControllerButtons: ["advance", "settings", "advance"]
           }
@@ -49,12 +51,22 @@ describe("options page", () => {
     expect(document.getElementById("app-version").textContent).toBe("5.1.7.0");
     expect(document.getElementById("rememberSpeed").checked).toBe(true);
     expect(document.getElementById("enabled").checked).toBe(false);
+    expect(document.getElementById("subtitleNudgeEnabledByDefault").checked).toBe(
+      false
+    );
     expect(document.querySelector('.shortcut-row[data-action="pause"]')).not.toBe(
       null
     );
     expect(document.getElementById("siteRulesContainer").children.length).toBe(
       1
     );
+    expect(document.querySelector(".site-rule .override-subtitleNudge").checked).toBe(
+      true
+    );
+    expect(
+      document.querySelector(".site-rule .site-subtitleNudgeEnabledByDefault")
+        .checked
+    ).toBe(false);
     expect(globalThis.getPopupControlBarOrder()).toEqual(["rewind", "advance"]);
   });
 
@@ -159,6 +171,7 @@ describe("options page", () => {
     document.getElementById("controllerMarginTop").value = "250";
     document.getElementById("controllerMarginBottom").value = "-4";
     document.getElementById("enableSubtitleNudge").checked = true;
+    document.getElementById("subtitleNudgeEnabledByDefault").checked = false;
     document.getElementById("subtitleNudgeInterval").value = "5";
     document.getElementById("popupMatchHoverControls").checked = false;
     document.getElementById("showPopupControlBar").checked = false;
@@ -177,6 +190,10 @@ describe("options page", () => {
     rule.querySelector(".site-rememberSpeed").checked = true;
     rule.querySelector(".override-opacity").checked = true;
     rule.querySelector(".site-controllerOpacity").value = "0";
+    rule.querySelector(".override-subtitleNudge").checked = true;
+    rule.querySelector(".site-enableSubtitleNudge").checked = true;
+    rule.querySelector(".site-subtitleNudgeEnabledByDefault").checked = false;
+    rule.querySelector(".site-subtitleNudgeInterval").value = "75";
     rule.querySelector(".override-popup-controlbar").checked = true;
     rule.querySelector(".site-showPopupControlBar").checked = false;
     globalThis.populateControlBarZones(
@@ -201,6 +218,7 @@ describe("options page", () => {
     expect(savedSettings.controllerOpacity).toBe(0);
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
+    expect(savedSettings.subtitleNudgeEnabledByDefault).toBe(false);
     expect(savedSettings.subtitleNudgeInterval).toBe(10);
     expect(savedSettings.showPopupControlBar).toBe(false);
     expect(savedSettings.popupMatchHoverControls).toBe(false);
@@ -211,6 +229,9 @@ describe("options page", () => {
         pattern: "youtube.com",
         rememberSpeed: true,
         controllerOpacity: 0,
+        enableSubtitleNudge: true,
+        subtitleNudgeEnabledByDefault: false,
+        subtitleNudgeInterval: 75,
         showPopupControlBar: false,
         popupControllerButtons: ["advance"]
       })
