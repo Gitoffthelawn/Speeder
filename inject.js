@@ -39,6 +39,7 @@ var tc = {
     defaultLogLevel: 3,
     logLevel: 3,
     enableSubtitleNudge: false,
+    subtitleNudgeEnabledByDefault: true,
     subtitleNudgeInterval: 50, // Default 50ms balances subtitle tracking with CPU cost
     subtitleNudgeAmount: 0.001,
     customButtonIcons: {}
@@ -384,6 +385,7 @@ function captureSiteRuleBase() {
     controllerMarginTop: tc.settings.controllerMarginTop,
     controllerMarginBottom: tc.settings.controllerMarginBottom,
     enableSubtitleNudge: tc.settings.enableSubtitleNudge,
+    subtitleNudgeEnabledByDefault: tc.settings.subtitleNudgeEnabledByDefault,
     subtitleNudgeInterval: tc.settings.subtitleNudgeInterval,
     controllerButtons: Array.isArray(tc.settings.controllerButtons)
       ? tc.settings.controllerButtons.slice()
@@ -410,6 +412,7 @@ function resetSettingsFromSiteRuleBase() {
   tc.settings.controllerMarginTop = base.controllerMarginTop;
   tc.settings.controllerMarginBottom = base.controllerMarginBottom;
   tc.settings.enableSubtitleNudge = base.enableSubtitleNudge;
+  tc.settings.subtitleNudgeEnabledByDefault = base.subtitleNudgeEnabledByDefault;
   tc.settings.subtitleNudgeInterval = base.subtitleNudgeInterval;
   tc.settings.controllerButtons = Array.isArray(base.controllerButtons)
     ? base.controllerButtons.slice()
@@ -659,13 +662,15 @@ function isSubtitleNudgeAvailableForVideo(video) {
 function isSubtitleNudgeEnabledForVideo(video) {
   if (!isSubtitleNudgeAvailableForVideo(video)) return false;
 
-  if (!video || !video.vsc) return true;
+  if (!video || !video.vsc) {
+    return Boolean(tc.settings.subtitleNudgeEnabledByDefault);
+  }
 
   if (typeof video.vsc.subtitleNudgeEnabledOverride === "boolean") {
     return video.vsc.subtitleNudgeEnabledOverride;
   }
 
-  return true;
+  return Boolean(tc.settings.subtitleNudgeEnabledByDefault);
 }
 
 function setSubtitleNudgeEnabledForVideo(video, enabled) {
@@ -1195,6 +1200,10 @@ chrome.storage.sync.get(tc.settings, function(storage) {
     typeof storage.enableSubtitleNudge !== "undefined"
       ? Boolean(storage.enableSubtitleNudge)
       : tc.settings.enableSubtitleNudge;
+  tc.settings.subtitleNudgeEnabledByDefault =
+    typeof storage.subtitleNudgeEnabledByDefault !== "undefined"
+      ? Boolean(storage.subtitleNudgeEnabledByDefault)
+      : tc.settings.subtitleNudgeEnabledByDefault;
   tc.settings.subtitleNudgeInterval = Math.min(
     1000,
     Math.max(10, Number(storage.subtitleNudgeInterval) || 50)
@@ -2051,6 +2060,7 @@ function applySiteRuleOverrides() {
     "controllerMarginTop",
     "controllerMarginBottom",
     "enableSubtitleNudge",
+    "subtitleNudgeEnabledByDefault",
     "subtitleNudgeInterval"
   ];
 

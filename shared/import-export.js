@@ -33,6 +33,7 @@
     "speed",
     "startHidden",
     "subtitleNudgeAmount",
+    "subtitleNudgeEnabledByDefault",
     "subtitleNudgeInterval"
   ]);
 
