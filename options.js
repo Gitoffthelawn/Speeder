@@ -210,6 +210,7 @@ var tcDefaults = {
   popupMatchHoverControls: true,
   popupControllerButtons: ["rewind", "slower", "faster", "advance", "display"],
   enableSubtitleNudge: false,
+  subtitleNudgeEnabledByDefault: true,
   subtitleNudgeInterval: 50,
   subtitleNudgeAmount: 0.001
 };
@@ -823,6 +824,8 @@ function save_options() {
   settings.keyBindings = keyBindings;
   settings.enableSubtitleNudge =
     document.getElementById("enableSubtitleNudge").checked;
+  settings.subtitleNudgeEnabledByDefault =
+    document.getElementById("subtitleNudgeEnabledByDefault").checked;
   settings.subtitleNudgeInterval =
     parseInt(document.getElementById("subtitleNudgeInterval").value, 10) ||
     tcDefaults.subtitleNudgeInterval;
@@ -906,6 +909,8 @@ function save_options() {
     if (ruleEl.querySelector(".override-subtitleNudge").checked) {
       rule.enableSubtitleNudge =
         ruleEl.querySelector(".site-enableSubtitleNudge").checked;
+      rule.subtitleNudgeEnabledByDefault =
+        ruleEl.querySelector(".site-subtitleNudgeEnabledByDefault").checked;
       var nudgeIv = parseInt(
         ruleEl.querySelector(".site-subtitleNudgeInterval").value,
         10
@@ -1162,10 +1167,12 @@ function createSiteRule(rule) {
   var hasSubtitleNudgeOverride = Boolean(
     rule &&
     (rule.enableSubtitleNudge !== undefined ||
+      rule.subtitleNudgeEnabledByDefault !== undefined ||
       rule.subtitleNudgeInterval !== undefined)
   );
   ruleEl.querySelector(".override-subtitleNudge").checked = hasSubtitleNudgeOverride;
   syncSiteRuleField(ruleEl, rule, "enableSubtitleNudge", true);
+  syncSiteRuleField(ruleEl, rule, "subtitleNudgeEnabledByDefault", true);
   syncSiteRuleField(ruleEl, rule, "subtitleNudgeInterval", false);
   applySiteRuleOverrideState(
     ruleEl,
@@ -1650,6 +1657,8 @@ function restore_options() {
       storage.showPopupControlBar !== false;
     document.getElementById("enableSubtitleNudge").checked =
       storage.enableSubtitleNudge;
+    document.getElementById("subtitleNudgeEnabledByDefault").checked =
+      storage.subtitleNudgeEnabledByDefault;
     document.getElementById("subtitleNudgeInterval").value =
       storage.subtitleNudgeInterval;
 

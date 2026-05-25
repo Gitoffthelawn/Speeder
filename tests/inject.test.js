@@ -112,4 +112,52 @@ describe("inject runtime", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+
+  it("uses the configured subtitle nudge default until a video is toggled", async () => {
+    await bootInject({
+      sync: {
+        enableSubtitleNudge: true,
+        subtitleNudgeEnabledByDefault: false
+      }
+    });
+
+    const startSubtitleNudge = vi.fn();
+    const video = {
+      paused: false,
+      playbackRate: 1.5,
+      vsc: {
+        startSubtitleNudge,
+        stopSubtitleNudge: vi.fn(),
+        subtitleNudgeEnabledOverride: null,
+        subtitleNudgeIndicator: null,
+        nudgeFlashIndicator: document.createElement("span")
+      }
+    };
+
+    expect(window.isSubtitleNudgeEnabledForVideo(video)).toBe(false);
+    expect(window.setSubtitleNudgeEnabledForVideo(video, true)).toBe(true);
+    expect(video.vsc.subtitleNudgeEnabledOverride).toBe(true);
+    expect(window.isSubtitleNudgeEnabledForVideo(video)).toBe(true);
+    expect(startSubtitleNudge).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies subtitle nudge default state from matching site rules", async () => {
+    await bootInject();
+
+    window.tc.settings.enableSubtitleNudge = true;
+    window.tc.settings.subtitleNudgeEnabledByDefault = true;
+    window.tc.settings.siteRules = [
+      {
+        pattern: "example.org",
+        subtitleNudgeEnabledByDefault: false
+      }
+    ];
+    window.captureSiteRuleBase();
+
+    expect(window.applySiteRuleOverrides()).toBe(false);
+    expect(window.tc.settings.subtitleNudgeEnabledByDefault).toBe(false);
+
+    window.resetSettingsFromSiteRuleBase();
+    expect(window.tc.settings.subtitleNudgeEnabledByDefault).toBe(true);
+  });
 });

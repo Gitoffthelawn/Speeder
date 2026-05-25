@@ -15,6 +15,7 @@
     "audioBoolean",
     "controllerOpacity",
     "enableSubtitleNudge",
+    "subtitleNudgeEnabledByDefault",
     "subtitleNudgeInterval",
     "controllerButtons",
     "showPopupControlBar",
@@ -43,6 +44,7 @@
     "popupMatchHoverControls",
     "popupControllerButtons",
     "enableSubtitleNudge",
+    "subtitleNudgeEnabledByDefault",
     "subtitleNudgeInterval",
     "subtitleNudgeAmount"
   ];
@@ -180,6 +182,7 @@
     popupMatchHoverControls: true,
     popupControllerButtons: DEFAULT_BUTTONS.slice(),
     enableSubtitleNudge: false,
+    subtitleNudgeEnabledByDefault: true,
     subtitleNudgeInterval: 50,
     subtitleNudgeAmount: 0.001
   };

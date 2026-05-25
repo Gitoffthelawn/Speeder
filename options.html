@@ -394,10 +394,20 @@
           <div class="row row-checkbox">
             <label for="enableSubtitleNudge"
               >Enable subtitle nudge<br /><em
-                >Makes tiny playback changes to help keep subtitles aligned.</em
+                >Makes tiny playback changes to help keep subtitles aligned and
+                allows nudge toggle controls.</em
               >
             </label>
             <input id="enableSubtitleNudge" type="checkbox" />
+          </div>
+          <div class="row row-checkbox">
+            <label for="subtitleNudgeEnabledByDefault"
+              >Start subtitle nudge enabled<br /><em
+                >When off, each video starts with nudging disabled until you
+                toggle it.</em
+              >
+            </label>
+            <input id="subtitleNudgeEnabledByDefault" type="checkbox" />
           </div>
           <div class="row">
             <label for="subtitleNudgeInterval"
@@ -826,6 +836,15 @@
                         ></label
                       >
                       <input type="checkbox" class="site-enableSubtitleNudge" />
+                    </div>
+                    <div class="site-rule-option site-rule-option-checkbox">
+                      <label
+                        >Start subtitle nudge enabled:<br /><em
+                          >When off, matching videos start with nudging disabled
+                          until you toggle it.</em
+                        ></label
+                      >
+                      <input type="checkbox" class="site-subtitleNudgeEnabledByDefault" />
                     </div>
                     <div class="site-rule-option site-rule-option-field">
                       <label
