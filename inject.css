@@ -11,11 +11,6 @@
   overflow: visible !important;
 }
 
-/* Use minimal z-index for non-YouTube sites to avoid overlapping modals */
-.vsc-controller.vsc-non-youtube {
-  z-index: 1 !important;
-}
-
 .vsc-nosource {
   display: none !important;
 }

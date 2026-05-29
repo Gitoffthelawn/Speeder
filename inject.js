@@ -59,6 +59,7 @@ var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
 var vscObservedRoots = new WeakSet();
+var vscConnectedScannedRoots = new WeakSet();
 var requestIdle =
   typeof window.requestIdleCallback === "function"
     ? window.requestIdleCallback.bind(window)
@@ -1039,6 +1040,22 @@ function scanNodeForMedia(node, parent, added) {
   if (node.shadowRoot) {
     observeRoot(node.shadowRoot);
   }
+
+  // Deep-scan descendant elements for shadow roots we haven't observed yet.
+  // This catches custom elements (like archive.org's <play-av>) whose shadow
+  // roots were created before our attachShadow patch was installed.
+  if (added && typeof node.querySelectorAll === "function") {
+    try {
+      var allElements = node.querySelectorAll("*");
+      for (var j = 0; j < allElements.length; j++) {
+        if (allElements[j].shadowRoot && !vscObservedRoots.has(allElements[j].shadowRoot)) {
+          observeRoot(allElements[j].shadowRoot);
+        }
+      }
+    } catch (e) {
+      // querySelectorAll may throw on detached or unusual nodes
+    }
+  }
 }
 
 function getScanNodeForRoot(root) {
@@ -1052,6 +1069,8 @@ function getScanNodeForRoot(root) {
 function rootMayContainMedia(root) {
   if (!root) return false;
   if (root.nodeType === Node.DOCUMENT_NODE) return true;
+  // Always scan shadow roots so we can find nested shadow roots or media.
+  if (root.host || (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot)) return true;
   if (typeof root.querySelector !== "function") return true;
 
   try {
@@ -1060,6 +1079,7 @@ function rootMayContainMedia(root) {
     return true;
   }
 }
+
 
 function scanRootForMedia(root) {
   var scanRoot = getScanNodeForRoot(root);
@@ -1071,13 +1091,30 @@ function scanRootForMedia(root) {
 }
 
 function observeRoot(root) {
-  if (!root || vscObservedRoots.has(root)) return;
-  vscObservedRoots.add(root);
-  setupListener(root);
-  attachMutationObserver(root);
-  attachMediaDetectionListeners(root);
-  if (rootMayContainMedia(root)) {
-    scanRootForMedia(root);
+  if (!root) return;
+
+  var isConnected = false;
+  try {
+    isConnected = root.nodeType === Node.DOCUMENT_NODE ||
+                  root.isConnected ||
+                  (root.host && (root.host.isConnected || (root.host.ownerDocument && root.host.ownerDocument.contains(root.host)))) ||
+                  (root.ownerDocument && root.ownerDocument.contains(root));
+  } catch (e) {
+    isConnected = true;
+  }
+
+  if (!vscObservedRoots.has(root)) {
+    vscObservedRoots.add(root);
+    setupListener(root);
+    attachMutationObserver(root);
+    attachMediaDetectionListeners(root);
+  }
+
+  if (isConnected && !vscConnectedScannedRoots.has(root)) {
+    vscConnectedScannedRoots.add(root);
+    if (rootMayContainMedia(root)) {
+      scanRootForMedia(root);
+    }
   }
 }
 
@@ -1121,6 +1158,12 @@ function log(message, level) {
     }
   }
 }
+
+// Patch attachShadow immediately — before any async operations — so we
+// catch shadow roots created while chrome.storage.sync.get is pending.
+// Sites like archive.org create Lit/LitElement shadow DOMs during page load;
+// waiting for the storage callback would miss them entirely.
+patchAttachShadow();
 
 chrome.storage.sync.get(tc.settings, function(storage) {
   var storedBindings = Array.isArray(storage.keyBindings)
@@ -1227,7 +1270,7 @@ chrome.storage.sync.get(tc.settings, function(storage) {
     chrome.storage.sync.set({ keyBindings: tc.settings.keyBindings });
   }
   captureSiteRuleBase();
-  patchAttachShadow();
+  // patchAttachShadow() is now called at top-level before this callback
   // Add a listener for messages from the popup.
   // We use a global flag to ensure the listener is only attached once.
   if (!window.vscMessageListener) {
@@ -1832,8 +1875,10 @@ function defineVideoController() {
     if (!this.video.src && !this.video.currentSrc)
       wrapper.classList.add("vsc-nosource");
     if (tc.settings.startHidden) wrapper.classList.add("vsc-hidden");
-    // Use lower z-index for non-YouTube sites to avoid overlapping modals
-    if (!isOnYouTube()) wrapper.classList.add("vsc-non-youtube");
+    // z-index is handled by the base .vsc-controller CSS rule (2147483646).
+    // The controller lives inside the video container, so high z-index only
+    // makes it topmost within the local stacking context — it won't overlay
+    // page-level modals or dialogs.
     var shadow = wrapper.attachShadow({ mode: "open" });
     var shadowStylesheet = doc.createElement("link");
     shadowStylesheet.rel = "stylesheet";
@@ -2480,6 +2525,24 @@ function initializeNow(doc, forceReinit = false) {
   attachKeydownListeners(doc);
   attachNavigationListeners();
   observeRoot(doc);
+
+  // Delayed rescan to catch custom elements whose shadow roots were created
+  // before our attachShadow patch was installed (e.g. archive.org's <play-av>
+  // Lit component, or any site that lazily creates shadow DOM video players).
+  if (!doc.vscDelayedShadowScanDone) {
+    doc.vscDelayedShadowScanDone = true;
+    setTimeout(function() {
+      if (!doc.body) return;
+      try {
+        var els = doc.body.querySelectorAll("*");
+        for (var i = 0; i < els.length; i++) {
+          if (els[i].shadowRoot && !vscObservedRoots.has(els[i].shadowRoot)) {
+            observeRoot(els[i].shadowRoot);
+          }
+        }
+      } catch (e) {}
+    }, 3000);
+  }
 
   if (forceReinit) {
     log("Force re-initialization requested", 4);
