@@ -160,4 +160,79 @@ describe("inject runtime", () => {
     window.resetSettingsFromSiteRuleBase();
     expect(window.tc.settings.subtitleNudgeEnabledByDefault).toBe(true);
   });
+
+  it("detects media inside dynamically added shadow DOMs", async () => {
+    await bootInject();
+
+    vi.useFakeTimers();
+
+    expect(window.vscAttachShadowPatched).toBe(true);
+
+    const host = document.createElement("custom-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/dynamic.mp4";
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+
+    // Flush MutationObserver microtasks so that the observer callback runs
+    // and schedules requestIdleCallback's setTimeout.
+    await flushAsyncWork();
+    // Run the scheduled timers (requestIdleCallback)
+    vi.runAllTimers();
+    // Flush any remaining microtasks/promises
+    await flushAsyncWork();
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div).toBeDefined();
+    expect(video.vsc.div.classList.contains("vsc-non-youtube")).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it("detects media in pre-existing shadow DOMs via delayed rescan", async () => {
+    vi.useFakeTimers();
+    loadHtmlString("<!doctype html><html><body></body></html>");
+
+    const host = document.createElement("custom-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/pre-existing.mp4";
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+
+    globalThis.chrome = createChromeMock({ sync: {}, local: {} });
+    window.chrome = globalThis.chrome;
+    globalThis.chrome.runtime.onMessage = {
+      addListener: vi.fn()
+    };
+    const originalSyncGet = globalThis.chrome.storage.sync.get;
+    const originalLocalGet = globalThis.chrome.storage.local.get;
+    globalThis.chrome.storage.sync.get = vi.fn((keys, callback) => {
+      Promise.resolve().then(() => originalSyncGet(keys, callback));
+    });
+    globalThis.chrome.storage.local.get = vi.fn((keys, callback) => {
+      Promise.resolve().then(() => originalLocalGet(keys, callback));
+    });
+
+    loadScript("shared/controller-utils.js");
+    loadScript("shared/key-bindings.js");
+    loadScript("shared/site-rules.js");
+    loadScript("ui-icons.js");
+    loadScript("inject.js");
+
+    // Fast-forward 3000ms for delayed rescan to trigger
+    vi.advanceTimersByTime(3000);
+
+    for (let i = 0; i < 5; i += 1) {
+      await flushAsyncWork();
+    }
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div).toBeDefined();
+    expect(video.vsc.div.classList.contains("vsc-non-youtube")).toBe(false);
+
+    vi.useRealTimers();
+  });
 });
+
