@@ -1,4 +1,3 @@
-const { afterEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
@@ -31,8 +30,11 @@ function bootInject(options) {
     );
   window.cancelIdleCallback = (id) => clearTimeout(id);
 
-  evaluateScript("ui-icons.js");
-  evaluateScript("inject.js");
+  evaluateScript("extension/shared/controller-utils.js");
+  evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/site-rules.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/content/inject.js");
 
   return chrome;
 }
@@ -116,14 +118,14 @@ describe("inject.js helper logic", () => {
     bootInject();
     await flushAsyncWork(3);
 
-    window.tc.settings.siteRules = [{ pattern: "localhost", enabled: false }];
+    window.tc.settings.siteRules = [{ pattern: "example.org", enabled: false }];
     window.captureSiteRuleBase();
     expect(window.applySiteRuleOverrides()).toBe(true);
 
     window.resetSettingsFromSiteRuleBase();
     window.tc.settings.siteRules = [
       {
-        pattern: "localhost",
+        pattern: "example.org",
         controllerLocation: "bottom-left",
         controllerMarginTop: 300,
         controllerMarginBottom: -10,

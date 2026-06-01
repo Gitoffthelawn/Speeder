@@ -38,11 +38,11 @@ async function bootInject({ sync = {}, local = {} } = {}) {
     );
   globalThis.cancelIdleCallback = (id) => clearTimeout(id);
 
-  loadScript("shared/controller-utils.js");
-  loadScript("shared/key-bindings.js");
-  loadScript("shared/site-rules.js");
-  loadScript("ui-icons.js");
-  loadScript("inject.js");
+  loadScript("extension/shared/controller-utils.js");
+  loadScript("extension/shared/key-bindings.js");
+  loadScript("extension/shared/site-rules.js");
+  loadScript("extension/shared/ui-icons.js");
+  loadScript("extension/content/inject.js");
 
   for (let i = 0; i < 3; i += 1) {
     await flushAsyncWork();
@@ -215,11 +215,11 @@ describe("inject runtime", () => {
       Promise.resolve().then(() => originalLocalGet(keys, callback));
     });
 
-    loadScript("shared/controller-utils.js");
-    loadScript("shared/key-bindings.js");
-    loadScript("shared/site-rules.js");
-    loadScript("ui-icons.js");
-    loadScript("inject.js");
+    loadScript("extension/shared/controller-utils.js");
+    loadScript("extension/shared/key-bindings.js");
+    loadScript("extension/shared/site-rules.js");
+    loadScript("extension/shared/ui-icons.js");
+    loadScript("extension/content/inject.js");
 
     // Fast-forward 3000ms for delayed rescan to trigger
     vi.advanceTimersByTime(3000);
@@ -235,4 +235,3 @@ describe("inject runtime", () => {
     vi.useRealTimers();
   });
 });
-

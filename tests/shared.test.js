@@ -1,8 +1,8 @@
-import controllerUtils from "../shared/controller-utils.js";
-import importExportUtils from "../shared/import-export.js";
-import keyBindingUtils from "../shared/key-bindings.js";
-import popupControls from "../shared/popup-controls.js";
-import siteRules from "../shared/site-rules.js";
+import controllerUtils from "../extension/shared/controller-utils.js";
+import importExportUtils from "../extension/shared/import-export.js";
+import keyBindingUtils from "../extension/shared/key-bindings.js";
+import popupControls from "../extension/shared/popup-controls.js";
+import siteRules from "../extension/shared/site-rules.js";
 
 describe("shared helpers", () => {
   it("matches site rules and skips invalid regex patterns", () => {

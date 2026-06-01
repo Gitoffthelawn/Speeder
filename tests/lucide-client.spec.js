@@ -1,4 +1,3 @@
-const { afterEach, describe, expect, it } = require("vitest");
 const {
   evaluateScript,
   loadHtmlString
@@ -11,8 +10,8 @@ describe("lucide-client.js", () => {
 
   it("builds icon URLs and rejects invalid slugs", () => {
     loadHtmlString("<!doctype html><html><body></body></html>");
-    evaluateScript("ui-icons.js");
-    evaluateScript("lucide-client.js");
+    evaluateScript("extension/shared/ui-icons.js");
+    evaluateScript("extension/options/lucide-client.js");
 
     expect(window.lucideIconSvgUrl("alarm-clock")).toContain(
       "/icons/alarm-clock.svg"
@@ -23,8 +22,8 @@ describe("lucide-client.js", () => {
 
   it("sanitizes SVG before persisting a Lucide icon", () => {
     loadHtmlString("<!doctype html><html><body></body></html>");
-    evaluateScript("ui-icons.js");
-    evaluateScript("lucide-client.js");
+    evaluateScript("extension/shared/ui-icons.js");
+    evaluateScript("extension/options/lucide-client.js");
 
     const sanitized = window.sanitizeLucideSvg(`
       <svg width="10" height="10" onclick="evil()">
@@ -43,8 +42,8 @@ describe("lucide-client.js", () => {
 
   it("searches and ranks icon slugs by query", () => {
     loadHtmlString("<!doctype html><html><body></body></html>");
-    evaluateScript("ui-icons.js");
-    evaluateScript("lucide-client.js");
+    evaluateScript("extension/shared/ui-icons.js");
+    evaluateScript("extension/options/lucide-client.js");
 
     const results = window.searchLucideSlugs(
       {

@@ -60,6 +60,7 @@ var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
 var vscObservedRoots = new WeakSet();
 var vscConnectedScannedRoots = new WeakSet();
+var vscInitializedDocuments = new Set();
 var requestIdle =
   typeof window.requestIdleCallback === "function"
     ? window.requestIdleCallback.bind(window)
@@ -1882,7 +1883,7 @@ function defineVideoController() {
     var shadow = wrapper.attachShadow({ mode: "open" });
     var shadowStylesheet = doc.createElement("link");
     shadowStylesheet.rel = "stylesheet";
-    shadowStylesheet.href = chrome.runtime.getURL("shadow.css");
+    shadowStylesheet.href = chrome.runtime.getURL("content/shadow.css");
     shadow.appendChild(shadowStylesheet);
 
     var controller = doc.createElement("div");
@@ -2252,8 +2253,6 @@ function setupListener(root) {
   );
   root.vscRateListenerAttached = true;
 }
-
-var vscInitializedDocuments = new Set();
 
 function clearPendingInitialization(doc) {
   if (!doc || !doc.vscPendingInitializeHandler) return;

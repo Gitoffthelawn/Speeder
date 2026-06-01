@@ -10,8 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      WEB_EXT_IGNORE_FILES: scripts/**
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +18,7 @@ jobs:
         run: npm install -g web-ext
 
       - name: Lint
-        run: web-ext lint
+        run: web-ext lint --source-dir extension
 
       # Beta tag (v*-beta) → Sign as unlisted on AMO, attach signed XPI to GitHub Prerelease
       # Firefox blocks all unsigned XPIs, even for self-hosted installs — unlisted signing is required
@@ -30,7 +28,7 @@ jobs:
           web-ext sign \
             --api-key ${{ secrets.FIREFOX_API_KEY }} \
             --api-secret ${{ secrets.FIREFOX_API_SECRET }} \
-            --source-dir . \
+            --source-dir extension \
             --artifacts-dir web-ext-artifacts \
             --channel unlisted
 
@@ -70,6 +68,6 @@ jobs:
           web-ext sign \
             --api-key ${{ secrets.FIREFOX_API_KEY }} \
             --api-secret ${{ secrets.FIREFOX_API_SECRET }} \
-            --source-dir . \
+            --source-dir extension \
             --artifacts-dir web-ext-artifacts \
             --channel listed

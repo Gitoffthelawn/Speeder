@@ -50,7 +50,7 @@
   /**
    * Local-only keys excluded from backup JSON. These are disposable caches
    * (e.g. Lucide tags.json) that bloat exports and are refetched when needed.
-   * Keep in sync with lucide-client.js (LUCIDE_TAGS_CACHE_KEY + "At").
+   * Keep in sync with options/lucide-client.js (LUCIDE_TAGS_CACHE_KEY + "At").
    */
   var localSettingsKeysOmittedFromExport = [
     "lucideTagsCacheV1",

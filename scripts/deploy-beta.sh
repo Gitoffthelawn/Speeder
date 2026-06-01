@@ -6,19 +6,20 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+MANIFEST_PATH="extension/manifest.json"
 
 manifest_version() {
-  python3 -c 'import json; print(json.load(open("manifest.json"))["version"])'
+  MANIFEST_PATH="$MANIFEST_PATH" python3 -c 'import json, os; print(json.load(open(os.environ["MANIFEST_PATH"]))["version"])'
 }
 
 bump_manifest() {
   local ver="$1"
-  VER="$ver" python3 <<'PY'
+  VER="$ver" MANIFEST_PATH="$MANIFEST_PATH" python3 <<'PY'
 import json
 import os
 
 ver = os.environ["VER"]
-path = "manifest.json"
+path = os.environ["MANIFEST_PATH"]
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
 data["version"] = ver
@@ -57,8 +58,8 @@ fi
 git checkout dev
 git pull origin dev
 
-echo "Current version in manifest.json: $(manifest_version)"
-read -r -p "New version for manifest.json (e.g. 5.0.4): " SEMVER_IN
+echo "Current version in $MANIFEST_PATH: $(manifest_version)"
+read -r -p "New version for $MANIFEST_PATH (e.g. 5.0.4): " SEMVER_IN
 SEMVER="$(normalize_semver "$SEMVER_IN")"
 validate_semver "$SEMVER"
 
@@ -76,7 +77,7 @@ fi
 
 echo
 echo "This will:"
-echo "  1. set manifest.json version to $SEMVER, commit on dev, push origin dev"
+echo "  1. set $MANIFEST_PATH version to $SEMVER, commit on dev, push origin dev"
 echo "  2. checkout beta, merge dev (no-ff), push origin beta"
 echo "  3. create tag $TAG and push it (triggers beta AMO + prerelease)"
 echo "  4. checkout dev (main is not modified)"
@@ -86,7 +87,7 @@ read -r -p "Continue? [y/N] " confirm
 echo "🚀 Releasing beta $TAG"
 
 bump_manifest "$SEMVER"
-git add manifest.json
+git add "$MANIFEST_PATH"
 git commit -m "Bump version to $SEMVER"
 git push origin dev
 

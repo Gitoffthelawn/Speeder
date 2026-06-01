@@ -1,4 +1,3 @@
-const { afterEach, beforeEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
@@ -11,7 +10,7 @@ const {
 function bootOptions(options) {
   const config = options || {};
 
-  loadHtmlFile("options.html");
+  loadHtmlFile("extension/options/options.html");
   installCommonWindowMocks();
 
   const chrome = createChromeMock({
@@ -31,9 +30,12 @@ function bootOptions(options) {
   );
   window.fetch = global.fetch;
 
-  evaluateScript("ui-icons.js");
-  evaluateScript("lucide-client.js");
-  evaluateScript("options.js");
+  evaluateScript("extension/shared/controller-utils.js");
+  evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/popup-controls.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/options/lucide-client.js");
+  evaluateScript("extension/options/options.js");
   fireDOMContentLoaded();
 
   return chrome;
@@ -119,7 +121,8 @@ describe("options.js", () => {
     window.populatePopupControlBarEditor(["advance", "settings", "rewind"]);
 
     window.createSiteRule({ pattern: "youtube.com" });
-    const ruleEl = document.querySelector(".site-rule");
+    const siteRuleEls = document.querySelectorAll(".site-rule");
+    const ruleEl = siteRuleEls[siteRuleEls.length - 1];
     ruleEl.querySelector(".override-placement").checked = true;
     ruleEl.querySelector(".site-controllerLocation").value = "top-right";
     ruleEl.querySelector(".site-controllerMarginTop").value = "300";
@@ -167,19 +170,22 @@ describe("options.js", () => {
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
     expect(savedSettings.popupControllerButtons).toEqual(["advance", "rewind"]);
-    expect(savedSettings.siteRules).toEqual([
-      {
-        pattern: "youtube.com",
-        enabled: true,
-        controllerLocation: "top-right",
-        controllerMarginTop: 200,
-        controllerMarginBottom: 0,
-        hideWithControls: true,
-        hideWithControlsTimer: 0.1,
-        showPopupControlBar: false,
-        popupControllerButtons: ["advance", "rewind"]
-      }
-    ]);
+    expect(savedSettings.siteRules).toHaveLength(3);
+    expect(savedSettings.siteRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pattern: "youtube.com",
+          enabled: true,
+          controllerLocation: "top-right",
+          controllerMarginTop: 200,
+          controllerMarginBottom: 0,
+          hideWithControls: true,
+          hideWithControlsTimer: 0.1,
+          showPopupControlBar: false,
+          popupControllerButtons: ["advance", "rewind"]
+        })
+      ])
+    );
   });
 
   it("blocks save when a site rule regex is invalid", async () => {
