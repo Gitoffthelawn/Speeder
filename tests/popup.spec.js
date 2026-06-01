@@ -1,4 +1,3 @@
-const { afterEach, beforeEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
@@ -11,7 +10,7 @@ const {
 function bootPopup(options) {
   const config = options || {};
 
-  loadHtmlFile("popup.html");
+  loadHtmlFile("extension/popup/popup.html");
   installCommonWindowMocks();
 
   const chrome = createChromeMock({
@@ -47,8 +46,10 @@ function bootPopup(options) {
   global.chrome = chrome;
   window.chrome = chrome;
 
-  evaluateScript("ui-icons.js");
-  evaluateScript("popup.js");
+  evaluateScript("extension/shared/site-rules.js");
+  evaluateScript("extension/shared/popup-controls.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/popup/popup.js");
   fireDOMContentLoaded();
 
   return chrome;
@@ -90,24 +91,25 @@ describe("popup.js", () => {
   });
 
   it("builds sanitized popup buttons and refreshes speed after an action", async () => {
+    let speedQueryCount = 0;
     const chrome = bootPopup({
       syncData: {
         enabled: true,
         controllerButtons: ["faster", "settings", "rewind", "faster"],
         popupMatchHoverControls: true
+      },
+      executeScriptImpl: (tabId, details, callback) => {
+        speedQueryCount += 1;
+        callback(
+          speedQueryCount <= 2
+            ? [
+                { speed: 1.25, preferred: false },
+                { speed: 1.5, preferred: true }
+              ]
+            : [{ speed: 1.75, preferred: true }]
+        );
       }
     });
-
-    chrome.tabs.executeScript
-      .mockImplementationOnce((tabId, details, callback) => {
-        callback([
-          { speed: 1.25, preferred: false },
-          { speed: 1.5, preferred: true }
-        ]);
-      })
-      .mockImplementationOnce((tabId, details, callback) => {
-        callback([{ speed: 1.75, preferred: true }]);
-      });
 
     chrome.tabs.sendMessage.mockImplementation((tabId, message, callback) => {
       if (message.action === "run_action") {
@@ -117,7 +119,6 @@ describe("popup.js", () => {
       callback({ speed: 1.0 });
     });
 
-    document.dispatchEvent(new window.Event("DOMContentLoaded"));
     await flushAsyncWork();
 
     const buttons = Array.from(
@@ -138,8 +139,6 @@ describe("popup.js", () => {
   });
 
   it("toggles enablement and closes after a successful refresh", async () => {
-    vi.useFakeTimers();
-
     const chrome = bootPopup({
       syncData: {
         enabled: false
@@ -147,6 +146,7 @@ describe("popup.js", () => {
     });
 
     await flushAsyncWork();
+    vi.useFakeTimers();
 
     expect(document.querySelector("#enable").classList.contains("hide")).toBe(false);
     expect(document.querySelector("#disable").classList.contains("hide")).toBe(true);
@@ -158,9 +158,9 @@ describe("popup.js", () => {
     );
     expect(chrome.browserAction.setIcon).toHaveBeenCalledWith({
       path: {
-        19: "icons/icon19.png",
-        38: "icons/icon38.png",
-        48: "icons/icon48.png"
+        19: "assets/icons/icon19.png",
+        38: "assets/icons/icon38.png",
+        48: "assets/icons/icon48.png"
       }
     });
 

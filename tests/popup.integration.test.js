@@ -7,13 +7,13 @@ import {
 } from "./helpers/browser.js";
 
 async function setupPopup(overrides = {}) {
-  loadHtml("popup.html");
+  loadHtml("extension/popup/popup.html");
   globalThis.chrome = createChromeMock(overrides);
   window.chrome = globalThis.chrome;
-  loadScript("shared/site-rules.js");
-  loadScript("shared/popup-controls.js");
-  loadScript("ui-icons.js");
-  loadScript("popup.js");
+  loadScript("extension/shared/site-rules.js");
+  loadScript("extension/shared/popup-controls.js");
+  loadScript("extension/shared/ui-icons.js");
+  loadScript("extension/popup/popup.js");
   triggerDomContentLoaded();
   await flushAsyncWork();
   return globalThis.chrome;
@@ -29,7 +29,7 @@ describe("popup UI", () => {
       ]
     });
 
-    expect(document.getElementById("app-version").innerText).toBe("5.1.7.0");
+    expect(document.getElementById("app-version").textContent).toBe("5.1.7.0");
     expect(document.getElementById("popupSpeed").textContent).toBe("1.75");
     expect(
       document.querySelectorAll("#popupControlBar button").length
@@ -60,7 +60,7 @@ describe("popup UI", () => {
       }
     });
 
-    expect(document.getElementById("status").innerText).toBe(
+    expect(document.getElementById("status").textContent).toBe(
       "Speeder is disabled for this site."
     );
     expect(document.getElementById("popupSpeed").textContent).toBe("1.00");
@@ -85,9 +85,9 @@ describe("popup UI", () => {
     );
     expect(chrome.browserAction.setIcon).toHaveBeenCalledWith({
       path: {
-        19: "icons/icon19_disabled.png",
-        38: "icons/icon38_disabled.png",
-        48: "icons/icon48_disabled.png"
+        19: "assets/icons/icon19_disabled.png",
+        38: "assets/icons/icon38_disabled.png",
+        48: "assets/icons/icon48_disabled.png"
       }
     });
   });
@@ -105,13 +105,13 @@ describe("popup UI", () => {
     });
 
     document.getElementById("refresh").click();
-    expect(document.getElementById("status").innerText).toBe(
+    expect(document.getElementById("status").textContent).toBe(
       "Cannot run on this page."
     );
 
     response = { status: "complete" };
     document.getElementById("refresh").click();
-    expect(document.getElementById("status").innerText).toBe(
+    expect(document.getElementById("status").textContent).toBe(
       "Scan complete. Closing..."
     );
     vi.advanceTimersByTime(500);

@@ -6,14 +6,14 @@ import {
 } from "./helpers/browser.js";
 
 async function setupImportExport(overrides = {}) {
-  loadHtml("options.html");
+  loadHtml("extension/options/options.html");
   globalThis.chrome = createChromeMock(overrides);
   window.chrome = globalThis.chrome;
   const restoreSpy = vi.fn();
   globalThis.restore_options = restoreSpy;
   window.restore_options = restoreSpy;
-  loadScript("shared/import-export.js");
-  loadScript("importExport.js");
+  loadScript("extension/shared/import-export.js");
+  loadScript("extension/options/import-export.js");
   await flushAsyncWork();
   return globalThis.chrome;
 }

@@ -4,7 +4,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var siteRuleUtils = speederShared.siteRules || {};
   var popupControlUtils = speederShared.popupControls || {};
 
-  /* `label` is only used if ui-icons.js has no path for this action (fallback). */
+  /* `label` is only used if shared/ui-icons.js has no path for this action (fallback). */
   var controllerButtonDefs = {
     rewind:   { label: "", className: "rw" },
     slower:   { label: "", className: "" },
@@ -128,7 +128,7 @@ document.addEventListener("DOMContentLoaded", function () {
       var tabId = tabs[0].id;
       chrome.tabs.executeScript(
         tabId,
-        { allFrames: true, file: "frameSpeedSnapshot.js" },
+        { allFrames: true, file: "content/frame-speed-snapshot.js" },
         function (results) {
           if (chrome.runtime.lastError) {
             sendToActiveTab({ action: "get_speed" }, function (response) {
@@ -192,7 +192,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
       btn.addEventListener("click", function () {
         if (btnId === "settings") {
-          window.open(chrome.runtime.getURL("options.html"));
+          window.open(chrome.runtime.getURL("options/options.html"));
           return;
         }
         sendToActiveTab(
@@ -210,11 +210,11 @@ document.addEventListener("DOMContentLoaded", function () {
   var manifest = chrome.runtime.getManifest();
   var versionElement = document.querySelector("#app-version");
   if (versionElement) {
-    versionElement.innerText = manifest.version;
+    versionElement.textContent = manifest.version;
   }
 
   document.querySelector("#config").addEventListener("click", function () {
-    window.open(chrome.runtime.getURL("options.html"));
+    window.open(chrome.runtime.getURL("options/options.html"));
   });
 
   document.querySelector("#about").addEventListener("click", function () {
@@ -350,9 +350,9 @@ document.addEventListener("DOMContentLoaded", function () {
     const suffix = `${enabled ? "" : "_disabled"}.png`;
     chrome.browserAction.setIcon({
       path: {
-        19: "icons/icon19" + suffix,
-        38: "icons/icon38" + suffix,
-        48: "icons/icon48" + suffix
+        19: "assets/icons/icon19" + suffix,
+        38: "assets/icons/icon38" + suffix,
+        48: "assets/icons/icon48" + suffix
       }
     });
   }
@@ -366,12 +366,12 @@ document.addEventListener("DOMContentLoaded", function () {
   function setStatusMessage(str) {
     const status_element = document.querySelector("#status");
     status_element.classList.toggle("hide", false);
-    status_element.innerText = str;
+    status_element.textContent = str;
   }
 
   function clearStatusMessage() {
     const status_element = document.querySelector("#status");
     status_element.classList.toggle("hide", true);
-    status_element.innerText = "";
+    status_element.textContent = "";
   }
 });

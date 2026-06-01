@@ -67,6 +67,16 @@ listens both for lower and upper case values (i.e. you can use
 key. This is not a perfect solution, as some sites may listen to both, but works
 most of the time.
 
+## Development
+
+The unpacked extension root is `extension/`. Load that directory in
+`about:debugging`, and run extension tooling against it, for example:
+
+```sh
+npm test
+npx --yes web-ext lint --source-dir extension
+```
+
 ## FAQ
 
 ### The video controls are not showing up?
