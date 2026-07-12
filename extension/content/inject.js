@@ -1439,6 +1439,32 @@ function createControllerButton(doc, action, label, className) {
   return button;
 }
 
+function createsControllerStackingContext(element) {
+  if (!element || !element.ownerDocument) return false;
+
+  var win = element.ownerDocument.defaultView || window;
+  var style = win.getComputedStyle(element);
+  var position = style.position;
+  var zIndex = style.zIndex;
+  var contain = style.contain || "";
+  var willChange = style.willChange || "";
+
+  return (
+    style.isolation === "isolate" ||
+    position === "fixed" ||
+    position === "sticky" ||
+    (position && position !== "static" && zIndex && zIndex !== "auto") ||
+    (style.opacity !== "" && Number(style.opacity) < 1) ||
+    (style.transform && style.transform !== "none") ||
+    (style.filter && style.filter !== "none") ||
+    (style.perspective && style.perspective !== "none") ||
+    contain.indexOf("paint") !== -1 ||
+    contain.indexOf("layout") !== -1 ||
+    willChange.indexOf("transform") !== -1 ||
+    willChange.indexOf("opacity") !== -1
+  );
+}
+
 function getControllerMount(video) {
   if (!video || !video.parentElement) return null;
 
@@ -1474,6 +1500,10 @@ function getControllerMount(video) {
     mount = next;
     candidate = next;
     depth += 1;
+
+    // Never climb out of a player-owned stacking context. Doing so lets the
+    // controller's high local z-index escape above sticky page headers.
+    if (createsControllerStackingContext(next)) break;
   }
 
   return mount;
@@ -1538,6 +1568,15 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
     mount.style.setProperty("position", "relative");
   }
 
+  if (!createsControllerStackingContext(mount)) {
+    mount.dataset.vscIsolationOwner = "true";
+    mount.dataset.vscOriginalIsolation =
+      mount.style.getPropertyValue("isolation");
+    mount.dataset.vscOriginalIsolationPriority =
+      mount.style.getPropertyPriority("isolation");
+    mount.style.setProperty("isolation", "isolate");
+  }
+
   var resizeObserver = null;
   if (typeof win.ResizeObserver === "function") {
     resizeObserver = new win.ResizeObserver(schedule);
@@ -1572,6 +1611,23 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
       delete mount.dataset.vscPositionOwner;
       delete mount.dataset.vscOriginalPosition;
       delete mount.dataset.vscOriginalPositionPriority;
+    }
+    if (
+      mount.dataset.vscIsolationOwner === "true" &&
+      !mount.querySelector(".vsc-controller")
+    ) {
+      if (mount.dataset.vscOriginalIsolation) {
+        mount.style.setProperty(
+          "isolation",
+          mount.dataset.vscOriginalIsolation,
+          mount.dataset.vscOriginalIsolationPriority || ""
+        );
+      } else {
+        mount.style.removeProperty("isolation");
+      }
+      delete mount.dataset.vscIsolationOwner;
+      delete mount.dataset.vscOriginalIsolation;
+      delete mount.dataset.vscOriginalIsolationPriority;
     }
   };
 }
