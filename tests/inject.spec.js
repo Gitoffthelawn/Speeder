@@ -140,4 +140,47 @@ describe("inject.js helper logic", () => {
     expect(window.tc.settings.controllerMarginBottom).toBe(0);
     expect(window.tc.settings.rememberSpeed).toBe(true);
   });
+
+  it("sizes and positions the controller host to the video bounds", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    wrapper.className = "vsc-controller";
+    mount.append(video, wrapper);
+    document.body.appendChild(mount);
+
+    Object.defineProperties(mount, {
+      offsetWidth: { value: 400 },
+      offsetHeight: { value: 240 },
+      clientLeft: { value: 2 },
+      clientTop: { value: 2 }
+    });
+    mount.getBoundingClientRect = () => ({
+      left: 100,
+      top: 50,
+      right: 500,
+      bottom: 290,
+      width: 400,
+      height: 240
+    });
+    video.getBoundingClientRect = () => ({
+      left: 140,
+      top: 70,
+      right: 460,
+      bottom: 250,
+      width: 320,
+      height: 180
+    });
+
+    window.positionControllerHost(wrapper, video, mount);
+
+    expect(wrapper.style.getPropertyValue("left")).toBe("38px");
+    expect(wrapper.style.getPropertyValue("top")).toBe("18px");
+    expect(wrapper.style.getPropertyValue("width")).toBe("320px");
+    expect(wrapper.style.getPropertyValue("height")).toBe("180px");
+    expect(wrapper.style.getPropertyPriority("width")).toBe("important");
+  });
 });

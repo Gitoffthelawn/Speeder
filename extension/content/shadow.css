@@ -1,3 +1,33 @@
+:host {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none !important;
+  z-index: 2147483647 !important;
+  white-space: normal;
+  overflow: visible !important;
+}
+
+:host(.vsc-nosource),
+:host(.vsc-hidden) {
+  display: none !important;
+}
+
+:host(.ytp-autohide:not(.vsc-hidden)),
+:host(.vsc-idle-hidden:not(.vsc-hidden)) {
+  visibility: hidden;
+  opacity: 0;
+}
+
+:host(.ytp-autohide.vsc-show:not(.vsc-hidden)),
+:host(.vsc-idle-hidden.vsc-show:not(.vsc-hidden)),
+:host(.vsc-forced-show:not(.vsc-hidden)) {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
 * {
   line-height: 1.9em;
   font-family: sans-serif;

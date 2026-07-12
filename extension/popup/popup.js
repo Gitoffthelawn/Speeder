@@ -27,6 +27,8 @@ document.addEventListener("DOMContentLoaded", function () {
   var popupExcludedButtonIds = new Set(["settings"]);
   var storageDefaults = {
     enabled: true,
+    lastSpeed: 1.0,
+    forceLastSavedSpeed: false,
     showPopupControlBar: true,
     controllerButtons: defaultButtons,
     popupMatchHoverControls: true,
@@ -34,6 +36,15 @@ document.addEventListener("DOMContentLoaded", function () {
     siteRules: []
   };
   var renderToken = 0;
+
+  function updateForceButton(enabled) {
+    var button = document.getElementById("forceLastSavedSpeed");
+    if (!button) return;
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+    button.title = enabled
+      ? "Stop forcing the saved speed"
+      : "Keep this page at the last speed saved by Speeder";
+  }
 
   function matchSiteRule(url, siteRules) {
     return siteRuleUtils.matchSiteRule(url, siteRules);
@@ -252,6 +263,43 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
+  var forceLastSavedSpeedButton = document.querySelector(
+    "#forceLastSavedSpeed"
+  );
+  if (!forceLastSavedSpeedButton.dataset.listenerAttached) {
+    forceLastSavedSpeedButton.dataset.listenerAttached = "true";
+    forceLastSavedSpeedButton.addEventListener("click", function () {
+      var button = this;
+      var enabled = button.getAttribute("aria-pressed") !== "true";
+      chrome.storage.sync.get({ lastSpeed: 1.0 }, function (storage) {
+        chrome.storage.sync.set({ forceLastSavedSpeed: enabled }, function () {
+          updateForceButton(enabled);
+          sendToActiveTab(
+            {
+              action: "set_force_last_saved_speed",
+              enabled: enabled,
+              speed: Number(storage.lastSpeed) || 1.0
+            },
+            function (response) {
+              if (response && response.speed != null) {
+                updateSpeedDisplay(response.speed);
+                setStatusMessage(
+                  enabled ? "Saved speed is now forced." : "Speed forcing is off."
+                );
+              } else {
+                setStatusMessage(
+                  enabled
+                    ? "Force enabled. No video found on this page."
+                    : "Speed forcing is off."
+                );
+              }
+            }
+          );
+        });
+      });
+    });
+  }
+
   function renderForActiveTab() {
     var currentRenderToken = ++renderToken;
 
@@ -282,6 +330,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         toggleEnabledUI(storage.enabled !== false);
+        updateForceButton(storage.forceLastSavedSpeed === true);
         buildControlBar(
           resolvePopupButtons(storage, siteRule),
           customIconsMap
@@ -324,6 +373,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (areaName !== "sync") return;
     if (
       changes.enabled ||
+      changes.forceLastSavedSpeed ||
       changes.showPopupControlBar ||
       changes.controllerButtons ||
       changes.popupMatchHoverControls ||

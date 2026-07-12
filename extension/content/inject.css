@@ -6,7 +6,8 @@
   width: 100% !important;
   height: 100% !important;
   pointer-events: none !important;
-  z-index: 2147483646 !important;
+  /* Keep the interactive controller above player-owned click/pause panes. */
+  z-index: 2147483647 !important;
   white-space: normal;
   overflow: visible !important;
 }
