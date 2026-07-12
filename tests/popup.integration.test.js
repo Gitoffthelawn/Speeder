@@ -134,4 +134,28 @@ describe("popup UI", () => {
     );
     expect(chrome.tabs.executeScript).toHaveBeenCalled();
   });
+
+  it("toggles force last saved speed and applies it to the active page", async () => {
+    const chrome = await setupPopup({
+      sync: { lastSpeed: 1.8, forceLastSavedSpeed: false }
+    });
+    chrome.tabs.sendMessage.mockClear();
+
+    document.getElementById("forceLastSavedSpeed").click();
+    await flushAsyncWork();
+
+    expect(chrome.storage.sync.__state.forceLastSavedSpeed).toBe(true);
+    expect(
+      document.getElementById("forceLastSavedSpeed").getAttribute("aria-pressed")
+    ).toBe("true");
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      1,
+      {
+        action: "set_force_last_saved_speed",
+        enabled: true,
+        speed: 1.8
+      },
+      expect.any(Function)
+    );
+  });
 });

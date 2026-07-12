@@ -1297,6 +1297,26 @@ chrome.storage.sync.get(tc.settings, function(storage) {
           sendResponse({ url: location.href });
           return false;
         }
+        if (request.action === "set_force_last_saved_speed") {
+          tc.settings.forceLastSavedSpeed = Boolean(request.enabled);
+          if (isValidSpeed(Number(request.speed))) {
+            tc.settings.lastSpeed = Number(request.speed);
+          }
+          var forceVideo = getPrimaryVideoElement();
+          if (!forceVideo) return false;
+          if (tc.settings.forceLastSavedSpeed) {
+            tc.mediaElements.forEach(function(video) {
+              if (!video || !video.vsc) return;
+              setSpeed(video, tc.settings.lastSpeed, false, true);
+              extendSpeedRestoreWindow(video);
+            });
+          }
+          sendResponse({
+            enabled: tc.settings.forceLastSavedSpeed,
+            speed: forceVideo.playbackRate
+          });
+          return false;
+        }
         if (request.action === "run_action") {
           var value = request.value;
           if (value === undefined || value === null) {
@@ -1417,6 +1437,143 @@ function createControllerButton(doc, action, label, className) {
     button.className = className;
   }
   return button;
+}
+
+function getControllerMount(video) {
+  if (!video || !video.parentElement) return null;
+
+  var videoRect = video.getBoundingClientRect();
+  var mount = video.parentElement;
+  var candidate = mount;
+  var depth = 0;
+
+  // Player click-catchers are often siblings of the video's immediate parent.
+  // Climb through tightly-sized wrappers so our host shares their stacking
+  // context, but stop before broad page-layout containers.
+  while (candidate && candidate.parentElement && depth < 5) {
+    var next = candidate.parentElement;
+    var nextRect = next.getBoundingClientRect();
+    var widthLimit = Math.max(videoRect.width * 1.35, videoRect.width + 80);
+    var heightLimit = Math.max(videoRect.height * 1.35, videoRect.height + 80);
+    var containsVideo =
+      nextRect.left <= videoRect.left + 1 &&
+      nextRect.top <= videoRect.top + 1 &&
+      nextRect.right >= videoRect.right - 1 &&
+      nextRect.bottom >= videoRect.bottom - 1;
+
+    if (
+      videoRect.width <= 0 ||
+      videoRect.height <= 0 ||
+      !containsVideo ||
+      nextRect.width > widthLimit ||
+      nextRect.height > heightLimit
+    ) {
+      break;
+    }
+
+    mount = next;
+    candidate = next;
+    depth += 1;
+  }
+
+  return mount;
+}
+
+function positionControllerHost(wrapper, video, mount) {
+  if (!wrapper || !video || !mount || !wrapper.isConnected) return;
+
+  var videoRect = video.getBoundingClientRect();
+  var mountRect = mount.getBoundingClientRect();
+  if (videoRect.width <= 0 || videoRect.height <= 0) return;
+
+  // Convert viewport pixels back into the mount's CSS pixel space. This keeps
+  // the overlay aligned even when a player or ancestor is scaled.
+  var mountWidth = mount.offsetWidth || mountRect.width || 1;
+  var mountHeight = mount.offsetHeight || mountRect.height || 1;
+  var scaleX = mountRect.width > 0 ? mountRect.width / mountWidth : 1;
+  var scaleY = mountRect.height > 0 ? mountRect.height / mountHeight : 1;
+  var left =
+    (videoRect.left - mountRect.left) / scaleX -
+    (mount.clientLeft || 0) +
+    (mount.scrollLeft || 0);
+  var top =
+    (videoRect.top - mountRect.top) / scaleY -
+    (mount.clientTop || 0) +
+    (mount.scrollTop || 0);
+
+  wrapper.style.setProperty("left", left + "px", "important");
+  wrapper.style.setProperty("top", top + "px", "important");
+  wrapper.style.setProperty(
+    "width",
+    videoRect.width / scaleX + "px",
+    "important"
+  );
+  wrapper.style.setProperty(
+    "height",
+    videoRect.height / scaleY + "px",
+    "important"
+  );
+}
+
+function setupControllerHostTracking(videoController, wrapper, mount) {
+  if (!videoController || !wrapper || !mount) return;
+
+  var doc = videoController.video.ownerDocument;
+  var win = doc.defaultView || window;
+  var frameId = null;
+  var update = function() {
+    frameId = null;
+    positionControllerHost(wrapper, videoController.video, mount);
+  };
+  var schedule = function() {
+    if (frameId !== null) return;
+    frameId = win.requestAnimationFrame(update);
+  };
+
+  if (win.getComputedStyle(mount).position === "static") {
+    mount.dataset.vscPositionOwner = "true";
+    mount.dataset.vscOriginalPosition = mount.style.getPropertyValue("position");
+    mount.dataset.vscOriginalPositionPriority =
+      mount.style.getPropertyPriority("position");
+    mount.style.setProperty("position", "relative");
+  }
+
+  var resizeObserver = null;
+  if (typeof win.ResizeObserver === "function") {
+    resizeObserver = new win.ResizeObserver(schedule);
+    resizeObserver.observe(videoController.video);
+    resizeObserver.observe(mount);
+  }
+
+  win.addEventListener("resize", schedule, { passive: true });
+  doc.addEventListener("fullscreenchange", schedule, { passive: true });
+  mount.addEventListener("scroll", schedule, { passive: true });
+  update();
+
+  videoController.controllerHostCleanup = function() {
+    if (resizeObserver) resizeObserver.disconnect();
+    if (frameId !== null) win.cancelAnimationFrame(frameId);
+    win.removeEventListener("resize", schedule);
+    doc.removeEventListener("fullscreenchange", schedule);
+    mount.removeEventListener("scroll", schedule);
+    if (
+      mount.dataset.vscPositionOwner === "true" &&
+      !mount.querySelector(".vsc-controller")
+    ) {
+      if (mount.dataset.vscOriginalPosition) {
+        mount.style.setProperty(
+          "position",
+          mount.dataset.vscOriginalPosition,
+          mount.dataset.vscOriginalPositionPriority || ""
+        );
+      } else {
+        mount.style.removeProperty("position");
+      }
+      delete mount.dataset.vscPositionOwner;
+      delete mount.dataset.vscOriginalPosition;
+      delete mount.dataset.vscOriginalPositionPriority;
+    }
+  };
 }
 
 function defineVideoController() {
@@ -1595,6 +1752,10 @@ function defineVideoController() {
       this.genericAutoHideCleanup = null;
     }
     if (this.div) this.div.remove();
+    if (this.controllerHostCleanup) {
+      this.controllerHostCleanup();
+      this.controllerHostCleanup = null;
+    }
     if (this.restoreSpeedTimer) clearTimeout(this.restoreSpeedTimer);
     if (this.video) {
       this.video.removeEventListener("loadedmetadata", this.handleLoadedMetadata);
@@ -2004,65 +2165,55 @@ function defineVideoController() {
       }
     }
 
-    var fragment = doc.createDocumentFragment();
-    fragment.appendChild(wrapper);
     const parentEl = this.parent || this.video.parentElement;
+    var mountEl = getControllerMount(this.video) || parentEl;
 
     log(`Inserting controller: parentEl=${!!parentEl}, parentNode=${!!parentEl?.parentNode}, hostname=${location.hostname}`, 4);
 
     if (!parentEl || !parentEl.parentNode) {
       log("No suitable parent found, appending to body", 4);
-      doc.body.appendChild(fragment);
+      doc.body.appendChild(wrapper);
+      setupControllerHostTracking(this, wrapper, doc.body);
       return wrapper;
     }
 
     try {
       switch (true) {
-        case location.hostname == "www.amazon.com":
-        case location.hostname == "www.reddit.com":
+        case location.hostname === "www.amazon.com":
+        case location.hostname === "www.reddit.com":
         case /hbogo\./.test(location.hostname):
-          log("Using parentElement.parentElement insertion", 5);
-          parentEl.parentElement.insertBefore(fragment, parentEl);
+          mountEl = parentEl.parentElement || mountEl;
           break;
-        case location.hostname == "www.facebook.com":
-          log("Using Facebook-specific insertion", 5);
-          let p =
-            parentEl.parentElement.parentElement.parentElement.parentElement
-              .parentElement.parentElement.parentElement;
-          if (p && p.firstChild) p.insertBefore(fragment, p.firstChild);
-          else parentEl.insertBefore(fragment, parentEl.firstChild);
-          break;
-        case location.hostname == "tv.apple.com":
-          log("Using Apple TV-specific insertion", 5);
-          const r = parentEl.getRootNode();
-          const s = r && r.querySelector ? r.querySelector(".scrim") : null;
-          if (s) s.prepend(fragment);
-          else parentEl.insertBefore(fragment, parentEl.firstChild);
-          break;
-        case location.hostname == "www.youtube.com":
-        case location.hostname == "m.youtube.com":
-        case location.hostname == "music.youtube.com":
-          // YouTube's player DOM has .html5-video-container (video's parent) as a
-          // low layer with overlay siblings (.ytp-player-content, etc.) on top that
-          // intercept mouse events. Insert into .html5-video-player (the player
-          // root) so the controller sits above all overlay layers.
-          log("Using YouTube-specific insertion", 5);
-          var ytPlayer = parentEl.closest(".html5-video-player");
-          if (ytPlayer) {
-            ytPlayer.insertBefore(fragment, ytPlayer.firstChild);
-          } else {
-            parentEl.insertBefore(fragment, parentEl.firstChild);
+        case location.hostname === "www.facebook.com":
+          var facebookMount = parentEl;
+          for (var facebookDepth = 0; facebookDepth < 7; facebookDepth += 1) {
+            if (!facebookMount.parentElement) break;
+            facebookMount = facebookMount.parentElement;
           }
+          mountEl = facebookMount || mountEl;
           break;
-        default:
-          log("Using default insertion method", 5);
-          parentEl.insertBefore(fragment, parentEl.firstChild);
+        case location.hostname === "tv.apple.com":
+          var appleRoot = parentEl.getRootNode();
+          var appleScrim =
+            appleRoot && appleRoot.querySelector
+              ? appleRoot.querySelector(".scrim")
+              : null;
+          mountEl = appleScrim || mountEl;
+          break;
+        case location.hostname === "www.youtube.com":
+        case location.hostname === "m.youtube.com":
+        case location.hostname === "music.youtube.com":
+          mountEl = parentEl.closest(".html5-video-player") || mountEl;
+          break;
       }
+      mountEl.insertBefore(wrapper, mountEl.firstChild);
+      setupControllerHostTracking(this, wrapper, mountEl);
       log("Controller successfully inserted into DOM", 4);
     } catch (error) {
       log(`Error inserting controller: ${error.message}`, 2);
       // Fallback to body insertion
-      doc.body.appendChild(fragment);
+      doc.body.appendChild(wrapper);
+      setupControllerHostTracking(this, wrapper, doc.body);
     }
 
     return wrapper;

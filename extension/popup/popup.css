@@ -99,6 +99,20 @@ button:focus-visible {
   border-color: #1f2937;
 }
 
+.popup-compact-action {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.popup-compact-action[aria-pressed="true"] {
+  background: #e8f3e5;
+  border-color: #9fbd98;
+  color: #285d21;
+}
+
 .popup-divider {
   height: 1px;
   background: var(--border);
@@ -307,6 +321,12 @@ button:focus-visible {
   #refresh:hover {
     background: #dfe3e8;
     border-color: #dfe3e8;
+  }
+
+  .popup-compact-action[aria-pressed="true"] {
+    background: #21351f;
+    border-color: #52724d;
+    color: #b8ddb1;
   }
 
   .donate-icon-btn:hover {
