@@ -183,4 +183,35 @@ describe("inject.js helper logic", () => {
     expect(wrapper.style.getPropertyValue("height")).toBe("180px");
     expect(wrapper.style.getPropertyPriority("width")).toBe("important");
   });
+
+  it("does not mount the controller outside a player stacking boundary", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const page = document.createElement("main");
+    const outsidePlayer = document.createElement("section");
+    const isolatedPlayer = document.createElement("div");
+    const videoParent = document.createElement("div");
+    const video = document.createElement("video");
+    isolatedPlayer.style.isolation = "isolate";
+    videoParent.appendChild(video);
+    isolatedPlayer.appendChild(videoParent);
+    outsidePlayer.appendChild(isolatedPlayer);
+    page.appendChild(outsidePlayer);
+    document.body.appendChild(page);
+
+    const rect = {
+      left: 10,
+      top: 100,
+      right: 650,
+      bottom: 460,
+      width: 640,
+      height: 360
+    };
+    [video, videoParent, isolatedPlayer, outsidePlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    expect(window.getControllerMount(video)).toBe(isolatedPlayer);
+  });
 });
