@@ -190,6 +190,34 @@ describe("inject runtime", () => {
     vi.useRealTimers();
   });
 
+  it("attaches a controller when Vidstack appends a source after the video", async () => {
+    await bootInject();
+    vi.useFakeTimers();
+
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    provider.appendChild(video);
+    document.body.appendChild(provider);
+
+    await flushAsyncWork();
+    vi.runAllTimers();
+    await flushAsyncWork();
+    expect(video.vsc).toBeUndefined();
+
+    const source = document.createElement("source");
+    source.src = "https://example.org/vidstack.mp4";
+    video.appendChild(source);
+
+    await flushAsyncWork();
+    vi.runAllTimers();
+    await flushAsyncWork();
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div).toBeDefined();
+    expect(video.vsc.div.classList.contains("vsc-nosource")).toBe(false);
+    vi.useRealTimers();
+  });
+
   it("detects media in pre-existing shadow DOMs via delayed rescan", async () => {
     vi.useFakeTimers();
     loadHtmlString("<!doctype html><html><body></body></html>");
