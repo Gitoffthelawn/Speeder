@@ -993,6 +993,15 @@ function ensureController(node, parent) {
   return node.vsc;
 }
 
+function ensureControllerForMediaChild(node) {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+  if (node.nodeName !== "SOURCE") return null;
+
+  var media = node.parentElement;
+  if (!isMediaElement(media)) return null;
+  return ensureController(media, media.parentElement || media.parentNode);
+}
+
 function removeController(node) {
   if (node && node.vsc) node.vsc.remove();
 }
@@ -1019,6 +1028,10 @@ function scanNodeForMedia(node, parent, added) {
   if (isMediaElement(node)) {
     if (added) ensureController(node, parent);
     else removeController(node);
+  } else if (added) {
+    // Players such as Vidstack often connect an empty <video> and append its
+    // <source> later. Retry the owning video when that source becomes usable.
+    ensureControllerForMediaChild(node);
   }
 
   // Use querySelectorAll instead of recursive child walking — the browser's
@@ -1465,8 +1478,16 @@ function createsControllerStackingContext(element) {
   );
 }
 
-function getControllerMount(video) {
+function getControllerMount(video, boundary) {
   if (!video || !video.parentElement) return null;
+
+  var mountBoundary =
+    boundary &&
+    boundary !== video &&
+    typeof boundary.contains === "function" &&
+    boundary.contains(video)
+      ? boundary
+      : null;
 
   var videoRect = video.getBoundingClientRect();
   var mount = video.parentElement;
@@ -1477,7 +1498,15 @@ function getControllerMount(video) {
   // Climb through tightly-sized wrappers so our host shares their stacking
   // context, but stop before broad page-layout containers.
   while (candidate && candidate.parentElement && depth < 5) {
+    if (mountBoundary && candidate === mountBoundary) break;
     var next = candidate.parentElement;
+    if (
+      mountBoundary &&
+      next !== mountBoundary &&
+      !mountBoundary.contains(next)
+    ) {
+      break;
+    }
     var nextRect = next.getBoundingClientRect();
     var widthLimit = Math.max(videoRect.width * 1.35, videoRect.width + 80);
     var heightLimit = Math.max(videoRect.height * 1.35, videoRect.height + 80);
@@ -1501,12 +1530,27 @@ function getControllerMount(video) {
     candidate = next;
     depth += 1;
 
+    // In fullscreen, the wrapper must remain inside the exact subtree the
+    // browser promotes to its top layer.
+    if (mountBoundary && next === mountBoundary) break;
+
     // Never climb out of a player-owned stacking context. Doing so lets the
     // controller's high local z-index escape above sticky page headers.
     if (createsControllerStackingContext(next)) break;
   }
 
   return mount;
+}
+
+function getFullscreenElement(doc) {
+  if (!doc) return null;
+  return (
+    doc.fullscreenElement ||
+    doc.webkitFullscreenElement ||
+    doc.mozFullScreenElement ||
+    doc.msFullscreenElement ||
+    null
+  );
 }
 
 function positionControllerHost(wrapper, video, mount) {
@@ -1589,15 +1633,25 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
   mount.addEventListener("scroll", schedule, { passive: true });
   update();
 
-  videoController.controllerHostCleanup = function() {
+  videoController.controllerHostMount = mount;
+  videoController.controllerHostCleanup = function(forceRestore) {
     if (resizeObserver) resizeObserver.disconnect();
     if (frameId !== null) win.cancelAnimationFrame(frameId);
     win.removeEventListener("resize", schedule);
     doc.removeEventListener("fullscreenchange", schedule);
     mount.removeEventListener("scroll", schedule);
+    var hasOtherController = false;
+    try {
+      hasOtherController = Array.from(
+        mount.querySelectorAll(".vsc-controller")
+      ).some(function(controllerHost) {
+        return controllerHost !== wrapper;
+      });
+    } catch (e) {}
     if (
       mount.dataset.vscPositionOwner === "true" &&
-      !mount.querySelector(".vsc-controller")
+      !hasOtherController &&
+      (forceRestore === true || !wrapper.isConnected)
     ) {
       if (mount.dataset.vscOriginalPosition) {
         mount.style.setProperty(
@@ -1614,7 +1668,8 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
     }
     if (
       mount.dataset.vscIsolationOwner === "true" &&
-      !mount.querySelector(".vsc-controller")
+      !hasOtherController &&
+      (forceRestore === true || !wrapper.isConnected)
     ) {
       if (mount.dataset.vscOriginalIsolation) {
         mount.style.setProperty(
@@ -1630,6 +1685,53 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
       delete mount.dataset.vscOriginalIsolationPriority;
     }
   };
+}
+
+function remountControllerHost(videoController, mount) {
+  if (
+    !videoController ||
+    !videoController.div ||
+    !mount ||
+    !mount.isConnected ||
+    mount === videoController.controllerHostMount
+  ) {
+    return false;
+  }
+
+  if (videoController.controllerHostCleanup) {
+    videoController.controllerHostCleanup(true);
+    videoController.controllerHostCleanup = null;
+  }
+
+  mount.insertBefore(videoController.div, mount.firstChild);
+  setupControllerHostTracking(videoController, videoController.div, mount);
+  return true;
+}
+
+function syncControllerFullscreenMount(videoController) {
+  if (!videoController || !videoController.video || !videoController.div) {
+    return false;
+  }
+
+  var video = videoController.video;
+  var doc = video.ownerDocument;
+  var fullscreenElement = getFullscreenElement(doc);
+  var targetMount = videoController.normalControllerMount;
+
+  if (
+    fullscreenElement &&
+    fullscreenElement !== video &&
+    typeof fullscreenElement.contains === "function" &&
+    fullscreenElement.contains(video)
+  ) {
+    targetMount = getControllerMount(video, fullscreenElement);
+  } else if (!fullscreenElement && (!targetMount || !targetMount.isConnected)) {
+    targetMount = getControllerMount(video);
+    videoController.normalControllerMount = targetMount;
+  }
+
+  if (!targetMount) return false;
+  return remountControllerHost(videoController, targetMount);
 }
 
 function defineVideoController() {
@@ -1681,6 +1783,7 @@ function defineVideoController() {
         event.type === "loadeddata" ||
         event.type === "canplay"
       ) {
+        if (this.div) this.div.classList.remove("vsc-nosource");
         applySourceTransitionPolicy(event.target, false);
       }
 
@@ -1776,7 +1879,10 @@ function defineVideoController() {
           if (this.div) {
             this.stopSubtitleNudge();
             if (!mutation.target.src && !mutation.target.currentSrc) {
-              this.div.classList.add("vsc-nosource");
+              this.div.classList.toggle(
+                "vsc-nosource",
+                !hasUsableMediaSource(mutation.target)
+              );
             } else {
               this.div.classList.remove("vsc-nosource");
               applySourceTransitionPolicy(this.video, true);
@@ -2090,7 +2196,7 @@ function defineVideoController() {
     const speed = this.video.playbackRate.toFixed(2);
     var wrapper = doc.createElement("div");
     wrapper.classList.add("vsc-controller");
-    if (!this.video.src && !this.video.currentSrc)
+    if (!hasUsableMediaSource(this.video))
       wrapper.classList.add("vsc-nosource");
     if (tc.settings.startHidden) wrapper.classList.add("vsc-hidden");
     // z-index is handled by the base .vsc-controller CSS rule (2147483646).
@@ -2229,6 +2335,7 @@ function defineVideoController() {
     if (!parentEl || !parentEl.parentNode) {
       log("No suitable parent found, appending to body", 4);
       doc.body.appendChild(wrapper);
+      this.normalControllerMount = doc.body;
       setupControllerHostTracking(this, wrapper, doc.body);
       return wrapper;
     }
@@ -2263,12 +2370,14 @@ function defineVideoController() {
           break;
       }
       mountEl.insertBefore(wrapper, mountEl.firstChild);
+      this.normalControllerMount = mountEl;
       setupControllerHostTracking(this, wrapper, mountEl);
       log("Controller successfully inserted into DOM", 4);
     } catch (error) {
       log(`Error inserting controller: ${error.message}`, 2);
       // Fallback to body insertion
       doc.body.appendChild(wrapper);
+      this.normalControllerMount = doc.body;
       setupControllerHostTracking(this, wrapper, doc.body);
     }
 
@@ -2615,6 +2724,15 @@ function attachMutationObserver(root) {
             return;
           }
 
+
+          if (
+            target.nodeName === "SOURCE" &&
+            mutation.attributeName === "src"
+          ) {
+            ensureControllerForMediaChild(target);
+            return;
+          }
+
           if (
             mutation.attributeName === "aria-hidden" &&
             target.attributes["aria-hidden"] &&
@@ -2752,6 +2870,9 @@ function initializeNow(doc, forceReinit = false) {
 
   if (forceReinit) {
     log("Force re-initialization requested", 4);
+    // A root is normally scanned only once. A user-requested rescan must also
+    // revisit media that was present but source-less during the initial scan.
+    scanRootForMedia(doc);
     refreshAllControllerGeometry();
   }
 
@@ -3192,11 +3313,22 @@ function showController(controller, duration = 2000, forced = false) {
   }, duration);
 }
 
-// Add global listener to handle fullscreen transitions and adjust controller positions
-document.addEventListener("fullscreenchange", () => {
+// Keep each controller inside the subtree promoted to the fullscreen top layer,
+// then restore its normal player-local mount when fullscreen exits.
+function handleFullscreenControllerTransition() {
   tc.mediaElements.forEach((video) => {
     if (video.vsc) {
+      syncControllerFullscreenMount(video.vsc);
       applyControllerLocation(video.vsc, video.vsc.controllerLocation);
     }
   });
+}
+
+[
+  "fullscreenchange",
+  "webkitfullscreenchange",
+  "mozfullscreenchange",
+  "MSFullscreenChange"
+].forEach(function(eventName) {
+  document.addEventListener(eventName, handleFullscreenControllerTransition);
 });

@@ -214,4 +214,106 @@ describe("inject.js helper logic", () => {
 
     expect(window.getControllerMount(video)).toBe(isolatedPlayer);
   });
+
+  it("keeps the controller inside a nested fullscreen player subtree", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const isolatedPlayer = document.createElement("div");
+    isolatedPlayer.style.isolation = "isolate";
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    provider.appendChild(video);
+    fullscreenPlayer.appendChild(provider);
+    isolatedPlayer.appendChild(fullscreenPlayer);
+    document.body.appendChild(isolatedPlayer);
+
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 360,
+      width: 640,
+      height: 360
+    };
+    [video, provider, fullscreenPlayer, isolatedPlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    expect(window.getControllerMount(video)).toBe(isolatedPlayer);
+    expect(window.getControllerMount(video, fullscreenPlayer)).toBe(
+      fullscreenPlayer
+    );
+  });
+
+  it("remounts the controller on fullscreen entry and restores it on exit", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const isolatedPlayer = document.createElement("div");
+    isolatedPlayer.style.isolation = "isolate";
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    wrapper.className = "vsc-controller";
+    provider.appendChild(video);
+    fullscreenPlayer.appendChild(provider);
+    isolatedPlayer.append(fullscreenPlayer, wrapper);
+    document.body.appendChild(isolatedPlayer);
+
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 360,
+      width: 640,
+      height: 360
+    };
+    [video, provider, fullscreenPlayer, isolatedPlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    const controller = {
+      video,
+      div: wrapper,
+      normalControllerMount: isolatedPlayer
+    };
+    window.setupControllerHostTracking(controller, wrapper, isolatedPlayer);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: fullscreenPlayer
+    });
+
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.parentElement).toBe(fullscreenPlayer);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: null
+    });
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.parentElement).toBe(isolatedPlayer);
+
+    wrapper.remove();
+    controller.controllerHostCleanup();
+  });
+
+  it("force-rescans media missed during initial hydration", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const video = document.createElement("video");
+    const source = document.createElement("source");
+    source.src = "https://example.org/late-source.mp4";
+    video.appendChild(source);
+    document.body.appendChild(video);
+
+    expect(video.vsc).toBeUndefined();
+    window.initializeWhenReady(document, true);
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div).toBeDefined();
+  });
 });
