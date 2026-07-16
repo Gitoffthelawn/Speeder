@@ -3567,7 +3567,10 @@ function defineVideoController() {
       // YouTube adds ytp-autohide class to the player when controls should be hidden
       // We mirror this class state to enable CSS-based hiding
       // The vsc-hidden class (from V key) takes precedence via CSS specificity
-      if (ytPlayer.classList.contains("ytp-autohide")) {
+      if (
+        ytPlayer.classList.contains("ytp-autohide") &&
+        !this.controllerInteractionActive
+      ) {
         wrapper.classList.add("ytp-autohide");
 
         // Immediately end any temporary "vsc-show" state to hide with YouTube
@@ -3612,6 +3615,16 @@ function defineVideoController() {
       showController(wrapper, tc.settings.hideWithControlsTimer * 1000);
     };
 
+    const handleControllerInteractionChange = (active) => {
+      if (active) {
+        wrapper.classList.remove("ytp-autohide");
+        showController(wrapper, tc.settings.hideWithControlsTimer * 1000);
+      } else {
+        syncControllerVisibility();
+      }
+    };
+    this.controllerInteractionChanged = handleControllerInteractionChange;
+
     const activityEvents = ["mousemove", "mousedown", "touchstart"];
     activityEvents.forEach((type) => {
       video.addEventListener(type, resetTimer, { passive: true });
@@ -3626,6 +3639,9 @@ function defineVideoController() {
         wrapper.removeEventListener(type, resetTimer);
         ytPlayer.removeEventListener(type, resetTimer);
       });
+      if (this.controllerInteractionChanged === handleControllerInteractionChange) {
+        this.controllerInteractionChanged = null;
+      }
     };
   };
 
@@ -3642,6 +3658,8 @@ function defineVideoController() {
         clearTimeout(timer);
       }
       timer = setTimeout(() => {
+        timer = null;
+        if (this.controllerInteractionActive) return;
         // Only hide if the video is not paused
         // (Many players keep controls visible while paused)
         // However, the user said "Reveal on every mouse and keyboard input"
@@ -3651,6 +3669,20 @@ function defineVideoController() {
         log("Generic hide: controller hidden due to inactivity", 5);
       }, tc.settings.hideWithControlsTimer * 1000);
     };
+
+    const handleControllerInteractionChange = (active) => {
+      if (active) {
+        wrapper.classList.remove("vsc-idle-hidden");
+        showController(wrapper, tc.settings.hideWithControlsTimer * 1000);
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      } else {
+        resetTimer();
+      }
+    };
+    this.controllerInteractionChanged = handleControllerInteractionChange;
 
     // Initial show/timer
     resetTimer();
@@ -3685,6 +3717,9 @@ function defineVideoController() {
       });
       video.removeEventListener("play", resetTimer);
       video.removeEventListener("pause", resetTimer);
+      if (this.controllerInteractionChanged === handleControllerInteractionChange) {
+        this.controllerInteractionChanged = null;
+      }
     };
 
     log(`Generic auto-hide setup complete with ${tc.settings.hideWithControlsTimer}s timer`, 4);
@@ -3757,6 +3792,27 @@ function defineVideoController() {
     /* Flash sits after #controls so it never inserts space between speed and buttons. */
     controller.appendChild(nudgeFlashIndicator);
     shadow.appendChild(controller);
+
+    const setControllerInteractionActive = (active) => {
+      this.controllerInteractionActive = active === true;
+      controller.classList.toggle(
+        "vsc-controls-hovered",
+        this.controllerInteractionActive
+      );
+      wrapper.classList.toggle(
+        "vsc-controls-hovered",
+        this.controllerInteractionActive
+      );
+      if (typeof this.controllerInteractionChanged === "function") {
+        this.controllerInteractionChanged(this.controllerInteractionActive);
+      }
+    };
+    controller.addEventListener("pointerenter", () => {
+      setControllerInteractionActive(true);
+    });
+    controller.addEventListener("pointerleave", () => {
+      setControllerInteractionActive(false);
+    });
 
     this.speedIndicator = dragHandle;
     this.subtitleNudgeIndicator = subtitleNudgeIndicator;

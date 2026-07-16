@@ -44,6 +44,7 @@
    after a mouse click kept #controls visible while hover-only rules (e.g. draggable
    margin) turned off when the pointer left the bar. */
 #controller:hover #controls,
+#controller.vsc-controls-hovered #controls,
 #controller:focus-within:has(:focus-visible) #controls,
 :host(:hover) #controls {
   display: inline-flex;
@@ -82,6 +83,10 @@
 
 /* Space between speed readout and hover buttons — tweak this value (px) as you like */
 #controller:hover > .draggable {
+  margin-right: 5px;
+}
+
+#controller.vsc-controls-hovered > .draggable {
   margin-right: 5px;
 }
 
