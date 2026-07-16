@@ -192,6 +192,32 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(window.getControllerMount(video)).toBe(isolatedPlayer);
   });
 
+  it("escapes a video wrapper when a sibling gesture pane covers the player", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const player = document.createElement("div");
+    const videoLayer = document.createElement("div");
+    const gesturePane = document.createElement("div");
+    const video = document.createElement("video");
+    const rect = makeRect(20, 70, 640, 360);
+
+    videoLayer.style.transform = "translateZ(0)";
+    video.src = "https://example.org/sibling-pane.mp4";
+    videoLayer.appendChild(video);
+    player.append(videoLayer, gesturePane);
+    document.body.appendChild(player);
+    [player, videoLayer, gesturePane, video].forEach((element) => {
+      setRect(element, rect);
+    });
+    setBoxMetrics(player, rect.width, rect.height);
+
+    expect(window.getControllerMount(video)).toBe(player);
+    window.ensureController(video, videoLayer);
+    expect(video.vsc.controllerHostMount).toBe(player);
+    expect(player.lastElementChild).toBe(video.vsc.div);
+  });
+
   it("recovers a controller measured before the player receives layout", async () => {
     vi.useFakeTimers();
     bootInject();

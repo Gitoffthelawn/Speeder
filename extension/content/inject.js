@@ -2560,6 +2560,46 @@ function createsControllerStackingContext(element) {
   );
 }
 
+function getSharedOverlayMount(mount, videoRect) {
+  if (!mount || !mount.parentElement || !videoRect) return null;
+  if (videoRect.width <= 0 || videoRect.height <= 0) return null;
+
+  var parent = mount.parentElement;
+  var parentRect = parent.getBoundingClientRect();
+  var widthLimit = Math.max(videoRect.width * 1.35, videoRect.width + 80);
+  var heightLimit = Math.max(videoRect.height * 1.35, videoRect.height + 80);
+  var tightlyContainsVideo =
+    parentRect.left <= videoRect.left + 1 &&
+    parentRect.top <= videoRect.top + 1 &&
+    parentRect.right >= videoRect.right - 1 &&
+    parentRect.bottom >= videoRect.bottom - 1 &&
+    parentRect.width <= widthLimit &&
+    parentRect.height <= heightLimit;
+  if (!tightlyContainsVideo) return null;
+
+  var siblings = Array.from(parent.children || []);
+  var hasCoveringSibling = siblings.some(function(sibling) {
+    if (sibling === mount || sibling.classList.contains("vsc-controller")) {
+      return false;
+    }
+    var rect = sibling.getBoundingClientRect();
+    var overlapWidth = Math.max(
+      0,
+      Math.min(rect.right, videoRect.right) - Math.max(rect.left, videoRect.left)
+    );
+    var overlapHeight = Math.max(
+      0,
+      Math.min(rect.bottom, videoRect.bottom) - Math.max(rect.top, videoRect.top)
+    );
+    return (
+      overlapWidth >= videoRect.width * 0.75 &&
+      overlapHeight >= videoRect.height * 0.75
+    );
+  });
+
+  return hasCoveringSibling ? parent : null;
+}
+
 function isShadowRootNode(node) {
   return Boolean(
     node &&
@@ -2649,9 +2689,13 @@ function getControllerMount(video, boundary) {
   var candidate = mount;
   var depth = 0;
 
-  // Do not escape the player's immediate local stacking boundary. This is the
-  // line that keeps a max-z-index overlay below page-level sticky headers.
-  if (createsControllerStackingContext(mount)) return mount;
+  // Usually stay inside the immediate local stacking boundary so a max-z-index
+  // host cannot escape over page headers. The exception is a tightly-sized
+  // shared player whose covering gesture/click pane is a sibling of that
+  // boundary; mount one level up so the controller can win hit-testing.
+  if (createsControllerStackingContext(mount)) {
+    return getSharedOverlayMount(mount, videoRect) || mount;
+  }
 
   // Player click-catchers are often siblings of the video's immediate parent.
   // Climb through tightly-sized wrappers so our host shares their stacking
@@ -3654,7 +3698,7 @@ function defineVideoController() {
     if (!hasUsableMediaSource(this.video))
       wrapper.classList.add("vsc-nosource");
     if (tc.settings.startHidden) wrapper.classList.add("vsc-hidden");
-    // z-index is handled by the base .vsc-controller CSS rule (2147483646).
+    // z-index is handled by the base .vsc-controller CSS rule (2147483647).
     // The controller lives inside the video container, so high z-index only
     // makes it topmost within the local stacking context — it won't overlay
     // page-level modals or dialogs.
