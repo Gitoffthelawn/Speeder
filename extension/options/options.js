@@ -835,6 +835,8 @@ function save_options() {
   settings.forceLastSavedSpeed =
     document.getElementById("forceLastSavedSpeed").checked;
   settings.audioBoolean = document.getElementById("audioBoolean").checked;
+  settings.showAmbientLoopControls =
+    document.getElementById("showAmbientLoopControls").checked;
   settings.enabled = document.getElementById("enabled").checked;
   settings.startHidden = document.getElementById("startHidden").checked;
   settings.shortcutTargetMode =
@@ -974,11 +976,15 @@ function save_options() {
         rule.preferredSpeed = preferredSpeed;
       }
       rule.audioBoolean = ruleEl.querySelector(".site-audioBoolean").checked;
+      rule.showAmbientLoopControls = ruleEl.querySelector(
+        ".site-showAmbientLoopControls"
+      ).checked;
     } else {
       delete rule.rememberSpeed;
       delete rule.forceLastSavedSpeed;
       delete rule.preferredSpeed;
       delete rule.audioBoolean;
+      delete rule.showAmbientLoopControls;
     }
 
     if (ruleEl.querySelector(".override-opacity").checked) {
@@ -1278,7 +1284,8 @@ function createSiteRule(rule) {
     (rule.rememberSpeed !== undefined ||
       rule.forceLastSavedSpeed !== undefined ||
       rule.preferredSpeed !== undefined ||
-      rule.audioBoolean !== undefined)
+      rule.audioBoolean !== undefined ||
+      rule.showAmbientLoopControls !== undefined)
   );
   ruleEl.querySelector(".override-playback").checked = hasPlaybackOverride;
   syncSiteRuleField(ruleEl, rule, "rememberSpeed", true);
@@ -1288,6 +1295,7 @@ function createSiteRule(rule) {
       ? String(rule.preferredSpeed)
       : "";
   syncSiteRuleField(ruleEl, rule, "audioBoolean", true);
+  syncSiteRuleField(ruleEl, rule, "showAmbientLoopControls", true);
   applySiteRuleOverrideState(ruleEl, "override-playback", "site-playback-container");
 
   ruleEl.querySelector(".override-opacity").checked = Boolean(
@@ -1780,6 +1788,8 @@ function restore_options(callback) {
     document.getElementById("forceLastSavedSpeed").checked =
       storage.forceLastSavedSpeed;
     document.getElementById("audioBoolean").checked = storage.audioBoolean;
+    document.getElementById("showAmbientLoopControls").checked =
+      storage.showAmbientLoopControls;
     document.getElementById("enabled").checked = storage.enabled;
     document.getElementById("startHidden").checked = storage.startHidden;
     document.getElementById("shortcutTargetMode").value =

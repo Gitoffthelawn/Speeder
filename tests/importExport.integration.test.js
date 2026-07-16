@@ -25,6 +25,7 @@ describe("import/export flows", () => {
     const settings = globalThis.vscGetSettingsDefaults();
     settings.siteRules[1].title = "My Shorts rule";
     settings.siteRules[1].shortcutTargetMode = "all";
+    settings.siteRules[1].showAmbientLoopControls = true;
 
     const exported = globalThis.normalizedSettingsForExport(
       globalThis.vscBuildStoredSettingsDiff(settings)
@@ -33,6 +34,7 @@ describe("import/export flows", () => {
 
     expect(restored.siteRules[1].title).toBe("My Shorts rule");
     expect(restored.siteRules[1].shortcutTargetMode).toBe("all");
+    expect(restored.siteRules[1].showAmbientLoopControls).toBe(true);
     expect(exported.siteRules.map((rule) => rule.title)).toEqual([
       "YouTube videos",
       "My Shorts rule",

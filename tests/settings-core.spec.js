@@ -34,8 +34,34 @@ describe("canonical settings storage", () => {
       })
     );
     expect(settings.shortcutTargetMode).toBe("closest");
+    expect(settings.showAmbientLoopControls).toBe(false);
     expect(settings.subtitleNudgeInterval).toBe(250);
     expect(settings.siteRules[0].enableSubtitleNudge).toBeUndefined();
+  });
+
+  it("round-trips global and site-specific ambient-loop visibility", () => {
+    const settings = window.vscExpandStoredSettings({
+      showAmbientLoopControls: true,
+      siteRules: [
+        {
+          pattern: "cnn.com",
+          showAmbientLoopControls: false
+        }
+      ]
+    });
+    const restored = window.vscExpandStoredSettings(
+      window.vscBuildStoredSettingsDiff(settings)
+    );
+
+    expect(restored.showAmbientLoopControls).toBe(true);
+    expect(restored.siteRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pattern: "cnn.com",
+          showAmbientLoopControls: false
+        })
+      ])
+    );
   });
 
   it("round-trips global and site-specific shortcut targeting", () => {

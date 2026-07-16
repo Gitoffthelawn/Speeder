@@ -282,6 +282,17 @@
             </label>
             <input id="audioBoolean" type="checkbox" />
           </div>
+          <div class="row row-checkbox">
+            <label for="showAmbientLoopControls"
+              >Show controls on ambient/slideshow videos<br />
+              <em
+                >Also shows Speeder on muted autoplay loops used as animated
+                cards or slideshow artwork. Genuine video players are always
+                controlled regardless of this setting.</em
+              >
+            </label>
+            <input id="showAmbientLoopControls" type="checkbox" />
+          </div>
 
           <div class="defaults-divider"></div>
           <h4 class="defaults-sub-heading">Playback</h4>
@@ -803,8 +814,8 @@
                   <label class="site-override-lead">
                     <span
                       >Override playback for this site<br /><em
-                        >When on, remember speed / force / audio below replace
-                        general defaults for matching URLs.</em
+                        >When on, remember speed / force / media eligibility
+                        below replace general defaults for matching URLs.</em
                       ></span
                     >
                     <input type="checkbox" class="override-playback" />
@@ -853,6 +864,16 @@
                         ></label
                       >
                       <input type="checkbox" class="site-audioBoolean" />
+                    </div>
+                    <div class="site-rule-option site-rule-option-checkbox">
+                      <label
+                        >Show controls on ambient/slideshow videos:<br /><em
+                          >Also includes muted autoplay loops used as animated
+                          cards or slideshow artwork. Genuine video players are
+                          always included.</em
+                        ></label
+                      >
+                      <input type="checkbox" class="site-showAmbientLoopControls" />
                     </div>
                   </div>
                 </div>
