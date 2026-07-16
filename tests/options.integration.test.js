@@ -29,6 +29,7 @@ describe("options page", () => {
       manifestVersion: "5.1.7.0",
       sync: {
         rememberSpeed: true,
+        showAmbientLoopControls: true,
         enabled: false,
         shortcutTargetMode: "all",
         subtitleNudgeEnabledByDefault: false,
@@ -45,6 +46,7 @@ describe("options page", () => {
             enabled: true,
             shortcutTargetMode: "all",
             preferredSpeed: 2.4,
+            showAmbientLoopControls: false,
             subtitleNudgeEnabledByDefault: false,
             showPopupControlBar: false,
             popupControllerButtons: ["advance", "settings", "advance"]
@@ -55,6 +57,7 @@ describe("options page", () => {
 
     expect(document.getElementById("app-version").textContent).toBe("5.1.7.0");
     expect(document.getElementById("rememberSpeed").checked).toBe(true);
+    expect(document.getElementById("showAmbientLoopControls").checked).toBe(true);
     expect(document.getElementById("enabled").checked).toBe(false);
     expect(document.getElementById("shortcutTargetMode").value).toBe("all");
     expect(document.getElementById("subtitleNudgeEnabledByDefault").checked).toBe(
@@ -72,6 +75,9 @@ describe("options page", () => {
     expect(document.querySelector(".site-rule .site-preferredSpeed").value).toBe(
       "2.4"
     );
+    expect(
+      document.querySelector(".site-rule .site-showAmbientLoopControls").checked
+    ).toBe(false);
     expect(
       document.querySelector(".site-rule .site-shortcutTargetMode").value
     ).toBe("all");
@@ -181,6 +187,7 @@ describe("options page", () => {
     const chrome = await setupOptions();
 
     document.getElementById("rememberSpeed").checked = true;
+    document.getElementById("showAmbientLoopControls").checked = true;
     document.getElementById("hideWithControlsTimer").value = "20";
     document.getElementById("controllerOpacity").value = "0";
     document.getElementById("controllerMarginTop").value = "250";
@@ -204,6 +211,7 @@ describe("options page", () => {
     rule.querySelector(".site-pattern").value = "youtube.com";
     rule.querySelector(".override-playback").checked = true;
     rule.querySelector(".site-rememberSpeed").checked = true;
+    rule.querySelector(".site-showAmbientLoopControls").checked = false;
     rule.querySelector(".site-preferredSpeed").value = "2.4";
     rule.querySelector(".override-shortcut-target").checked = true;
     rule.querySelector(".site-shortcutTargetMode").value = "all";
@@ -231,6 +239,7 @@ describe("options page", () => {
     );
 
     expect(savedSettings.rememberSpeed).toBe(true);
+    expect(savedSettings.showAmbientLoopControls).toBe(true);
     expect(savedSettings.hideWithControlsTimer).toBe(15);
     expect(savedSettings.controllerOpacity).toBe(0);
     expect(savedSettings.controllerMarginTop).toBe(200);
@@ -246,6 +255,7 @@ describe("options page", () => {
         title: "My YouTube rule",
         pattern: "youtube.com",
         rememberSpeed: true,
+        showAmbientLoopControls: false,
         shortcutTargetMode: "all",
         preferredSpeed: 2.4,
         controllerOpacity: 0,

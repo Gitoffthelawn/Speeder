@@ -309,7 +309,7 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(second.video.playbackRate).toBe(1.2);
   });
 
-  it("skips GIF-like ambient loops but accepts them if they become real players", async () => {
+  it("skips ambient loops by default and includes them when explicitly enabled", async () => {
     bootInject();
     await settleLifecycle();
 
@@ -332,10 +332,69 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(window.ensureController(video, mount)).toBeNull();
     expect(video.vsc).toBeUndefined();
 
-    video.loop = false;
-    video.controls = true;
+    window.tc.settings.showAmbientLoopControls = true;
+    window.tc.siteRuleBase.showAmbientLoopControls = true;
     expect(window.ensureController(video, mount)).toBeTruthy();
     expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("always includes a genuine player even when its video has an ambient-loop signature", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const player = document.createElement("media-player");
+    const video = document.createElement("video");
+    const playButton = document.createElement("button");
+    const rect = makeRect(0, 0, 640, 360);
+    playButton.setAttribute("aria-label", "Play");
+    video.autoplay = true;
+    video.defaultMuted = true;
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.src = "https://example.org/interactive-loop.mp4";
+    player.append(video, playButton);
+    document.body.appendChild(player);
+    [player, video].forEach((element) => setRect(element, rect));
+    setBoxMetrics(player, rect.width, rect.height);
+
+    expect(window.tc.settings.showAmbientLoopControls).toBe(false);
+    expect(window.ensureController(video, player)).toBeTruthy();
+    expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("applies the ambient-loop setting from a matching site rule", async () => {
+    bootInject({
+      url: "https://news.example.org/story",
+      syncData: {
+        showAmbientLoopControls: false,
+        siteRules: [
+          {
+            pattern: "news.example.org",
+            enabled: true,
+            showAmbientLoopControls: true
+          }
+        ]
+      }
+    });
+    await settleLifecycle();
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    const rect = makeRect(0, 0, 480, 270);
+    video.autoplay = true;
+    video.defaultMuted = true;
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.src = "https://news.example.org/card.mp4";
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+    [mount, video].forEach((element) => setRect(element, rect));
+    setBoxMetrics(mount, rect.width, rect.height);
+
+    expect(window.ensureController(video, mount)).toBeTruthy();
+    expect(window.tc.settings.showAmbientLoopControls).toBe(true);
   });
 
   it("moves the host into an ancestor fullscreen subtree and restores it", async () => {
@@ -379,6 +438,52 @@ describe("inject.js media/controller lifecycle regressions", () => {
     });
     window.syncControllerFullscreenMount(controller);
     expect(wrapper.parentElement).toBe(normalMount);
+
+    wrapper.remove();
+    controller.controllerHostCleanup();
+  });
+
+  it("promotes an ancestor-fullscreen controller into the browser top layer", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const fullscreenPlayer = document.createElement("div");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    const rect = makeRect(0, 0, 1280, 720);
+
+    fullscreenPlayer.append(video, wrapper);
+    document.body.appendChild(fullscreenPlayer);
+    [fullscreenPlayer, video].forEach((element) => {
+      setRect(element, rect);
+      setBoxMetrics(element, rect.width, rect.height);
+    });
+    wrapper.showPopover = vi.fn();
+    wrapper.hidePopover = vi.fn();
+
+    const controller = {
+      video,
+      div: wrapper,
+      normalControllerMount: fullscreenPlayer
+    };
+    window.setupControllerHostTracking(controller, wrapper, fullscreenPlayer);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: fullscreenPlayer
+    });
+
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.parentNode).toBe(fullscreenPlayer);
+    expect(wrapper.showPopover).toHaveBeenCalledOnce();
+    expect(wrapper.getAttribute("popover")).toBe("manual");
+    expect(wrapper.classList.contains("vsc-fullscreen-popover")).toBe(true);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: null
+    });
+    window.syncControllerFullscreenMount(controller);
+    expect(wrapper.hidePopover).toHaveBeenCalledOnce();
 
     wrapper.remove();
     controller.controllerHostCleanup();
@@ -610,6 +715,14 @@ describe("inject.js media/controller lifecycle regressions", () => {
 
     controllerElement.dispatchEvent(new Event("pointerleave"));
     expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+
+    player.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    expect(wrapper.classList.contains("vsc-show")).toBe(true);
+    player.classList.remove("ytp-autohide");
+    player.classList.add("ytp-autohide");
+    await settleLifecycle();
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+    expect(wrapper.classList.contains("vsc-show")).toBe(true);
   });
 
   it("suppresses a zero-size host and reveals it when the video becomes visible", async () => {

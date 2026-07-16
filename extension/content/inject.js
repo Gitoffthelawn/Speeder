@@ -98,6 +98,10 @@ var tc = {
     rememberSpeed: getSharedDefault("rememberSpeed", false),
     forceLastSavedSpeed: getSharedDefault("forceLastSavedSpeed", false),
     audioBoolean: getSharedDefault("audioBoolean", false),
+    showAmbientLoopControls: getSharedDefault(
+      "showAmbientLoopControls",
+      false
+    ),
     startHidden: getSharedDefault("startHidden", false),
     hideWithYouTubeControls: getSharedDefault(
       "hideWithYouTubeControls",
@@ -488,6 +492,7 @@ function captureSiteRuleBase() {
     rememberSpeed: tc.settings.rememberSpeed,
     forceLastSavedSpeed: tc.settings.forceLastSavedSpeed,
     audioBoolean: tc.settings.audioBoolean,
+    showAmbientLoopControls: tc.settings.showAmbientLoopControls,
     controllerOpacity: tc.settings.controllerOpacity,
     controllerMarginTop: tc.settings.controllerMarginTop,
     controllerMarginBottom: tc.settings.controllerMarginBottom,
@@ -516,6 +521,7 @@ function resetSettingsFromSiteRuleBase() {
   tc.settings.rememberSpeed = base.rememberSpeed;
   tc.settings.forceLastSavedSpeed = base.forceLastSavedSpeed;
   tc.settings.audioBoolean = base.audioBoolean;
+  tc.settings.showAmbientLoopControls = base.showAmbientLoopControls;
   tc.settings.controllerOpacity = base.controllerOpacity;
   tc.settings.controllerMarginTop = base.controllerMarginTop;
   tc.settings.controllerMarginBottom = base.controllerMarginBottom;
@@ -1364,8 +1370,70 @@ function isMediaElement(node) {
   );
 }
 
+function hasInteractivePlayerChrome(node) {
+  if (!node || node.nodeName !== "VIDEO") return false;
+  if (node.controls === true) return true;
+
+  if (typeof node.closest === "function") {
+    var knownPlayer = node.closest(
+      ".html5-video-player, .video-js, .jwplayer, .plyr, " +
+        "[class~='video-player'], [data-testid*='video-player'], " +
+        "media-player, amp-video"
+    );
+    if (knownPlayer) return true;
+  }
+
+  var ancestor = node.parentElement;
+  var videoRect = node.getBoundingClientRect();
+  var depth = 0;
+  while (ancestor && depth < 4) {
+    var ancestorRect = ancestor.getBoundingClientRect();
+    if (
+      videoRect.width > 0 &&
+      videoRect.height > 0 &&
+      (ancestorRect.width > Math.max(videoRect.width * 1.75, videoRect.width + 160) ||
+        ancestorRect.height > Math.max(videoRect.height * 1.75, videoRect.height + 160))
+    ) {
+      break;
+    }
+    if (
+      (videoRect.width <= 0 || videoRect.height <= 0) &&
+      depth > 1
+    ) {
+      break;
+    }
+    try {
+      var controls = ancestor.querySelectorAll(
+        "button, [role='button'], input[type='range'], [role='slider']"
+      );
+      for (var i = 0; i < Math.min(controls.length, 40); i += 1) {
+        var control = controls[i];
+        var description = [
+          control.getAttribute("aria-label"),
+          control.getAttribute("title"),
+          control.getAttribute("data-title-no-tooltip"),
+          control.className
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (
+          /(^|\b)(play|pause|mute|volume|seek|captions?|subtitles?|fullscreen|full screen)(\b|$)/i.test(
+            description
+          )
+        ) {
+          return true;
+        }
+      }
+    } catch (_error) {}
+    ancestor = ancestor.parentElement;
+    depth += 1;
+  }
+
+  return false;
+}
+
 function isAmbientLoopMedia(node) {
-  return Boolean(
+  var hasAmbientSignature = Boolean(
     node &&
       node.nodeName === "VIDEO" &&
       node.autoplay === true &&
@@ -1374,6 +1442,8 @@ function isAmbientLoopMedia(node) {
       node.playsInline === true &&
       node.controls !== true
   );
+  if (!hasAmbientSignature || tc.settings.showAmbientLoopControls) return false;
+  return !hasInteractivePlayerChrome(node);
 }
 
 function hasUsableMediaSource(node) {
@@ -1424,16 +1494,16 @@ function ensureController(node, parent) {
     return null;
   }
   if (!isMediaElement(node)) return null;
-  if (isAmbientLoopMedia(node)) {
-    if (node.vsc) removeController(node);
-    return null;
-  }
   if (typeof tc.videoController === "undefined") defineVideoController();
 
   // href selects site rules; re-run on every new/usable media so all runtime
   // paths agree on activation and effective settings.
   applySiteRuleOverrides();
   if (!siteRuleUtils.isSpeederActiveForSite(tc.settings.enabled, tc.activeSiteRule)) {
+    if (node.vsc) removeController(node);
+    return null;
+  }
+  if (isAmbientLoopMedia(node)) {
     if (node.vsc) removeController(node);
     return null;
   }
@@ -1913,6 +1983,8 @@ function hydrateRuntimeSettings(rawStorage, options) {
   tc.settings.rememberSpeed = storage.rememberSpeed === true;
   tc.settings.forceLastSavedSpeed = storage.forceLastSavedSpeed === true;
   tc.settings.audioBoolean = storage.audioBoolean === true;
+  tc.settings.showAmbientLoopControls =
+    storage.showAmbientLoopControls === true;
   tc.settings.enabled = storage.enabled !== false;
   tc.settings.startHidden = storage.startHidden === true;
   tc.settings.hideWithControls =
@@ -3065,14 +3137,14 @@ function disableDirectFullscreenPopover(videoController) {
   wrapper.removeAttribute("popover");
 }
 
-function enableDirectFullscreenPopover(videoController) {
+function enableFullscreenPopover(videoController, preferredMount) {
   if (!videoController || !videoController.video || !videoController.div) {
     return false;
   }
   var wrapper = videoController.div;
   if (typeof wrapper.showPopover !== "function") return false;
 
-  var normalMount = videoController.normalControllerMount;
+  var normalMount = preferredMount || videoController.normalControllerMount;
   var normalMountIsConnected = Boolean(
     normalMount &&
       (normalMount.isConnected ||
@@ -3113,12 +3185,6 @@ function syncControllerFullscreenMount(videoController) {
   var fullscreenElement = getFullscreenElement(doc);
   var targetMount = videoController.normalControllerMount;
 
-  if (fullscreenElement === video) {
-    if (enableDirectFullscreenPopover(videoController)) return true;
-  } else {
-    disableDirectFullscreenPopover(videoController);
-  }
-
   if (
     fullscreenElement &&
     (fullscreenElement === video ||
@@ -3131,6 +3197,18 @@ function syncControllerFullscreenMount(videoController) {
   }
 
   if (!targetMount) return false;
+
+  if (fullscreenElement) {
+    // Fullscreen elements and popovers both participate in the browser's top
+    // layer. Showing Speeder's host after the player enters fullscreen keeps it
+    // above provider-owned surfaces even when the provider clips descendants or
+    // creates a new fullscreen stacking context (notably Firefox + YouTube).
+    // Browsers without the Popover API retain the player-local remount fallback.
+    if (enableFullscreenPopover(videoController, targetMount)) return true;
+  } else {
+    disableDirectFullscreenPopover(videoController);
+  }
+
   return remountControllerHost(videoController, targetMount);
 }
 
@@ -3573,9 +3651,13 @@ function defineVideoController() {
       ) {
         wrapper.classList.add("ytp-autohide");
 
-        // Immediately end any temporary "vsc-show" state to hide with YouTube
-        // UNLESS it was forced by a shortcut (vsc-forced-show)
-        if (!wrapper.classList.contains("vsc-forced-show")) {
+        // Preserve an active pointer reveal or shortcut-forced reveal. The
+        // ytp-autohide class remains in place, so CSS hides the host as soon as
+        // vsc-show's bounded timer expires.
+        if (
+          !wrapper.classList.contains("vsc-forced-show") &&
+          !wrapper.classList.contains("vsc-show")
+        ) {
           wrapper.classList.remove("vsc-show");
           if (wrapper.showTimeOut) {
             clearTimeout(wrapper.showTimeOut);
@@ -3984,6 +4066,7 @@ function applySiteRuleOverrides() {
     "rememberSpeed",
     "forceLastSavedSpeed",
     "audioBoolean",
+    "showAmbientLoopControls",
     "controllerOpacity",
     "controllerMarginTop",
     "controllerMarginBottom",
@@ -4033,9 +4116,12 @@ function applySiteRuleOverrides() {
 }
 
 function removeIneligibleMediaControllers() {
-  if (tc.settings.audioBoolean) return;
   tc.mediaElements.slice().forEach(function(media) {
-    if (media && media.nodeName === "AUDIO") {
+    if (
+      media &&
+      ((media.nodeName === "AUDIO" && !tc.settings.audioBoolean) ||
+        isAmbientLoopMedia(media))
+    ) {
       removeController(media);
     }
   });
