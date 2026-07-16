@@ -3137,14 +3137,14 @@ function disableDirectFullscreenPopover(videoController) {
   wrapper.removeAttribute("popover");
 }
 
-function enableDirectFullscreenPopover(videoController) {
+function enableFullscreenPopover(videoController, preferredMount) {
   if (!videoController || !videoController.video || !videoController.div) {
     return false;
   }
   var wrapper = videoController.div;
   if (typeof wrapper.showPopover !== "function") return false;
 
-  var normalMount = videoController.normalControllerMount;
+  var normalMount = preferredMount || videoController.normalControllerMount;
   var normalMountIsConnected = Boolean(
     normalMount &&
       (normalMount.isConnected ||
@@ -3185,12 +3185,6 @@ function syncControllerFullscreenMount(videoController) {
   var fullscreenElement = getFullscreenElement(doc);
   var targetMount = videoController.normalControllerMount;
 
-  if (fullscreenElement === video) {
-    if (enableDirectFullscreenPopover(videoController)) return true;
-  } else {
-    disableDirectFullscreenPopover(videoController);
-  }
-
   if (
     fullscreenElement &&
     (fullscreenElement === video ||
@@ -3203,6 +3197,18 @@ function syncControllerFullscreenMount(videoController) {
   }
 
   if (!targetMount) return false;
+
+  if (fullscreenElement) {
+    // Fullscreen elements and popovers both participate in the browser's top
+    // layer. Showing Speeder's host after the player enters fullscreen keeps it
+    // above provider-owned surfaces even when the provider clips descendants or
+    // creates a new fullscreen stacking context (notably Firefox + YouTube).
+    // Browsers without the Popover API retain the player-local remount fallback.
+    if (enableFullscreenPopover(videoController, targetMount)) return true;
+  } else {
+    disableDirectFullscreenPopover(videoController);
+  }
+
   return remountControllerHost(videoController, targetMount);
 }
 
