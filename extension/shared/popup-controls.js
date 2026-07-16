@@ -66,12 +66,26 @@
   function pickBestFrameSpeedResult(results) {
     if (!results || !results.length) return null;
 
+    function normalizeResult(result) {
+      var normalized = { speed: result.speed };
+      if (typeof result.forceLastSavedSpeed === "boolean") {
+        normalized.forceLastSavedSpeed = result.forceLastSavedSpeed;
+      }
+      if (
+        typeof result.forceLastSavedSpeedControlledBySiteRule === "boolean"
+      ) {
+        normalized.forceLastSavedSpeedControlledBySiteRule =
+          result.forceLastSavedSpeedControlledBySiteRule;
+      }
+      return normalized;
+    }
+
     var fallback = null;
     for (var i = 0; i < results.length; i++) {
       var result = results[i];
       if (!result || typeof result.speed !== "number") continue;
-      if (result.preferred) return { speed: result.speed };
-      if (!fallback) fallback = { speed: result.speed };
+      if (result.preferred) return normalizeResult(result);
+      if (!fallback) fallback = normalizeResult(result);
     }
 
     return fallback;

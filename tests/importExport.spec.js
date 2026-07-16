@@ -51,6 +51,7 @@ function bootImportExport(options) {
   });
   global.URL = window.URL;
 
+  evaluateScript("extension/shared/settings-core.js");
   evaluateScript("extension/shared/import-export.js");
   evaluateScript("extension/options/import-export.js");
   fireDOMContentLoaded();
@@ -191,7 +192,7 @@ describe("options/import-export.js", () => {
       },
       expect.any(Function)
     );
-    expect(chrome.storage.sync.clear).toHaveBeenCalled();
+    expect(chrome.storage.sync.clear).not.toHaveBeenCalled();
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
       { rememberSpeed: true, enabled: false },
       expect.any(Function)
@@ -236,5 +237,64 @@ describe("options/import-export.js", () => {
     expect(document.querySelector("#status").textContent).toContain(
       "Failed to parse backup file"
     );
+  });
+
+  it("rejects malformed custom icons without changing stored settings", async () => {
+    const { chrome } = bootImportExport({
+      syncData: { rememberSpeed: false },
+      localData: {
+        customButtonIcons: {
+          faster: { slug: "rocket", svg: "<svg></svg>" }
+        }
+      }
+    });
+
+    const realCreateElement = document.createElement.bind(document);
+    const fakeInput = realCreateElement("input");
+    Object.defineProperty(fakeInput, "files", {
+      configurable: true,
+      value: [
+        {
+          __contents: JSON.stringify({
+            settings: { rememberSpeed: true },
+            localSettings: { customButtonIcons: "not-an-icon-map" }
+          })
+        }
+      ]
+    });
+    fakeInput.click = vi.fn(() => {
+      fakeInput.onchange({ target: fakeInput });
+    });
+
+    vi.spyOn(document, "createElement").mockImplementation((tagName) => {
+      if (String(tagName).toLowerCase() === "input") return fakeInput;
+      return realCreateElement(tagName);
+    });
+
+    class FakeFileReader {
+      readAsText(file) {
+        this.onload({ target: { result: file.__contents } });
+      }
+    }
+
+    vi.stubGlobal("FileReader", FakeFileReader);
+    window.FileReader = FakeFileReader;
+    chrome.storage.sync.set.mockClear();
+    chrome.storage.local.set.mockClear();
+    chrome.storage.local.remove.mockClear();
+
+    document.querySelector("#importSettings").click();
+    await flushAsyncWork();
+
+    expect(document.querySelector("#status").textContent).toContain(
+      "Invalid backup file format"
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.local.set).not.toHaveBeenCalled();
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(false);
+    expect(chrome.storage.local._dump().customButtonIcons).toEqual({
+      faster: { slug: "rocket", svg: "<svg></svg>" }
+    });
   });
 });

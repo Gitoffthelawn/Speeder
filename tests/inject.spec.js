@@ -139,6 +139,15 @@ describe("inject.js helper logic", () => {
     expect(window.tc.settings.controllerMarginTop).toBe(200);
     expect(window.tc.settings.controllerMarginBottom).toBe(0);
     expect(window.tc.settings.rememberSpeed).toBe(true);
+
+    window.resetSettingsFromSiteRuleBase();
+    window.tc.settings.shortcutTargetMode = "closest";
+    window.tc.settings.siteRules = [
+      { pattern: "example.org", shortcutTargetMode: "all" }
+    ];
+    window.captureSiteRuleBase();
+    window.applySiteRuleOverrides();
+    expect(window.tc.settings.shortcutTargetMode).toBe("all");
   });
 
   it("sizes and positions the controller host to the video bounds", async () => {
@@ -315,5 +324,65 @@ describe("inject.js helper logic", () => {
 
     expect(video.vsc).toBeDefined();
     expect(video.vsc.div).toBeDefined();
+  });
+
+  it("only blocks page key handlers when the shortcut force option is enabled", async () => {
+    bootInject({
+      syncData: {
+        keyBindings: [
+          {
+            action: "faster",
+            code: "KeyD",
+            value: 0.1,
+            force: false
+          }
+        ]
+      }
+    });
+    await flushAsyncWork(3);
+
+    const video = document.createElement("video");
+    video.src = "https://example.org/shortcut.mp4";
+    document.body.appendChild(video);
+    window.ensureController(video, document.body);
+    let pageKeydowns = 0;
+    let pageCaptureKeydowns = 0;
+    document.addEventListener(
+      "keydown",
+      function() {
+        pageCaptureKeydowns += 1;
+      },
+      true
+    );
+    document.body.addEventListener("keydown", function() {
+      pageKeydowns += 1;
+    });
+
+    const unblocked = new KeyboardEvent("keydown", {
+      key: "d",
+      code: "KeyD",
+      bubbles: true,
+      cancelable: true
+    });
+    video.dispatchEvent(unblocked);
+
+    expect(video.playbackRate).toBeCloseTo(1.1, 5);
+    expect(pageKeydowns).toBe(1);
+    expect(pageCaptureKeydowns).toBe(1);
+    expect(unblocked.defaultPrevented).toBe(false);
+
+    window.tc.settings.keyBindings[0].force = "true";
+    const blocked = new KeyboardEvent("keydown", {
+      key: "d",
+      code: "KeyD",
+      bubbles: true,
+      cancelable: true
+    });
+    video.dispatchEvent(blocked);
+
+    expect(video.playbackRate).toBeCloseTo(1.2, 5);
+    expect(pageKeydowns).toBe(1);
+    expect(pageCaptureKeydowns).toBe(1);
+    expect(blocked.defaultPrevented).toBe(true);
   });
 });

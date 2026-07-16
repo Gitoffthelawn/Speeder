@@ -30,11 +30,26 @@
     "rememberSpeed",
     "showPopupControlBar",
     "siteRules",
+    "siteRulesFormat",
+    "siteRulesMeta",
     "speed",
     "startHidden",
     "subtitleNudgeAmount",
     "subtitleNudgeEnabledByDefault",
-    "subtitleNudgeInterval"
+    "subtitleNudgeInterval",
+    "resetSpeed",
+    "speedStep",
+    "fastSpeed",
+    "rewindTime",
+    "advanceTime",
+    "resetKeyCode",
+    "slowerKeyCode",
+    "fasterKeyCode",
+    "rewindKeyCode",
+    "advanceKeyCode",
+    "fastKeyCode",
+    "displayKeyCode",
+    "blacklist"
   ]);
 
   function isRecognizedRawSettingsObject(backup) {
@@ -48,24 +63,20 @@
   }
 
   /**
-   * Local-only keys excluded from backup JSON. These are disposable caches
-   * (e.g. Lucide tags.json) that bloat exports and are refetched when needed.
-   * Keep in sync with options/lucide-client.js (LUCIDE_TAGS_CACHE_KEY + "At").
+   * Only user-authored local settings belong in backups. Disposable caches,
+   * per-source speed history, and future runtime data stay installation-local.
    */
-  var localSettingsKeysOmittedFromExport = [
-    "lucideTagsCacheV1",
-    "lucideTagsCacheV1At"
-  ];
-
   function filterLocalSettingsForExport(local) {
     if (!local || typeof local !== "object" || Array.isArray(local)) {
       return {};
     }
     var out = {};
-    for (var key in local) {
-      if (!Object.prototype.hasOwnProperty.call(local, key)) continue;
-      if (localSettingsKeysOmittedFromExport.indexOf(key) !== -1) continue;
-      out[key] = local[key];
+    if (
+      local.customButtonIcons &&
+      typeof local.customButtonIcons === "object" &&
+      !Array.isArray(local.customButtonIcons)
+    ) {
+      out.customButtonIcons = local.customButtonIcons;
     }
     return out;
   }
@@ -108,19 +119,55 @@
   function extractImportSettings(backup) {
     var settingsToImport = null;
     var isWrappedBackup = false;
+    var backupIsObject =
+      backup && typeof backup === "object" && !Array.isArray(backup);
+    var hasWrappedSettings =
+      backupIsObject &&
+      Object.prototype.hasOwnProperty.call(backup, "settings");
 
-    if (backup && backup.settings && typeof backup.settings === "object") {
+    if (hasWrappedSettings) {
+      if (
+        !backup.settings ||
+        typeof backup.settings !== "object" ||
+        Array.isArray(backup.settings)
+      ) {
+        return null;
+      }
       settingsToImport = backup.settings;
       isWrappedBackup = true;
-    } else if (
-      backup &&
-      typeof backup === "object" &&
-      isRecognizedRawSettingsObject(backup)
-    ) {
+    } else if (backupIsObject && isRecognizedRawSettingsObject(backup)) {
       settingsToImport = backup;
     }
 
     if (!settingsToImport) return null;
+
+    if (
+      isWrappedBackup &&
+      Object.prototype.hasOwnProperty.call(backup, "localSettings") &&
+      (
+        !backup.localSettings ||
+        typeof backup.localSettings !== "object" ||
+        Array.isArray(backup.localSettings)
+      )
+    ) {
+      return null;
+    }
+
+    if (
+      isWrappedBackup &&
+      backup.localSettings &&
+      Object.prototype.hasOwnProperty.call(
+        backup.localSettings,
+        "customButtonIcons"
+      ) &&
+      (
+        !backup.localSettings.customButtonIcons ||
+        typeof backup.localSettings.customButtonIcons !== "object" ||
+        Array.isArray(backup.localSettings.customButtonIcons)
+      )
+    ) {
+      return null;
+    }
 
     return {
       isWrappedBackup: isWrappedBackup,
@@ -128,7 +175,8 @@
       localSettings:
         backup &&
         backup.localSettings &&
-        typeof backup.localSettings === "object"
+        typeof backup.localSettings === "object" &&
+        !Array.isArray(backup.localSettings)
           ? backup.localSettings
           : null
     };

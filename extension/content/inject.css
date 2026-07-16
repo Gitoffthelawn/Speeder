@@ -12,6 +12,24 @@
   overflow: visible !important;
 }
 
+/* Native media controls can fullscreen the replaced <video> element without
+   calling the page's requestFullscreen method. A manual popover keeps the
+   controller in the browser top layer without nesting it inside <video>. */
+.vsc-controller.vsc-fullscreen-popover {
+  position: fixed !important;
+  inset: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+}
+
+.vsc-controller.vsc-fullscreen-popover::backdrop {
+  pointer-events: none !important;
+  background: transparent !important;
+}
+
 .vsc-nosource {
   display: none !important;
 }

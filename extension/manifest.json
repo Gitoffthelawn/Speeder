@@ -1,7 +1,7 @@
 {
   "name": "Speeder",
   "short_name": "Speeder",
-  "version": "5.3.5.0",
+  "version": "5.3.6.0",
   "manifest_version": 2,
   "description": "Speed up, slow down, advance and rewind HTML5 audio/video with shortcuts (New and improved version of \"Video Speed Controller\")",
   "homepage_url": "https://github.com/SoPat712/speeder",
@@ -26,6 +26,7 @@
     ]
   },
   "permissions": [
+    "activeTab",
     "storage",
     "https://cdn.jsdelivr.net/*"
   ],
@@ -50,6 +51,7 @@
         "file:///*"
       ],
       "match_about_blank": true,
+      "run_at": "document_start",
       "exclude_matches": [
         "https://plus.google.com/hangouts/*",
         "https://hangouts.google.com/*",
@@ -61,6 +63,7 @@
       "js": [
         "shared/controller-utils.js",
         "shared/key-bindings.js",
+        "shared/settings-core.js",
         "shared/site-rules.js",
         "shared/ui-icons.js",
         "content/inject.js"
@@ -69,6 +72,7 @@
   ],
   "web_accessible_resources": [
     "content/inject.css",
+    "content/shadow-bridge.js",
     "content/shadow.css"
   ]
 }

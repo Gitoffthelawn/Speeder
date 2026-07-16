@@ -13,6 +13,7 @@ async function setupOptions(overrides = {}) {
   globalThis.fetch = vi.fn();
   loadScript("extension/shared/controller-utils.js");
   loadScript("extension/shared/key-bindings.js");
+  loadScript("extension/shared/settings-core.js");
   loadScript("extension/shared/popup-controls.js");
   loadScript("extension/shared/ui-icons.js");
   loadScript("extension/options/lucide-client.js");
@@ -29,6 +30,7 @@ describe("options page", () => {
       sync: {
         rememberSpeed: true,
         enabled: false,
+        shortcutTargetMode: "all",
         subtitleNudgeEnabledByDefault: false,
         popupMatchHoverControls: false,
         popupControllerButtons: ["rewind", "settings", "advance", "advance"],
@@ -38,8 +40,11 @@ describe("options page", () => {
         ],
         siteRules: [
           {
+            title: "YouTube testing",
             pattern: "youtube.com",
             enabled: true,
+            shortcutTargetMode: "all",
+            preferredSpeed: 2.4,
             subtitleNudgeEnabledByDefault: false,
             showPopupControlBar: false,
             popupControllerButtons: ["advance", "settings", "advance"]
@@ -51,6 +56,7 @@ describe("options page", () => {
     expect(document.getElementById("app-version").textContent).toBe("5.1.7.0");
     expect(document.getElementById("rememberSpeed").checked).toBe(true);
     expect(document.getElementById("enabled").checked).toBe(false);
+    expect(document.getElementById("shortcutTargetMode").value).toBe("all");
     expect(document.getElementById("subtitleNudgeEnabledByDefault").checked).toBe(
       false
     );
@@ -62,6 +68,15 @@ describe("options page", () => {
     );
     expect(document.querySelector(".site-rule .override-subtitleNudge").checked).toBe(
       true
+    );
+    expect(document.querySelector(".site-rule .site-preferredSpeed").value).toBe(
+      "2.4"
+    );
+    expect(
+      document.querySelector(".site-rule .site-shortcutTargetMode").value
+    ).toBe("all");
+    expect(document.querySelector(".site-rule .site-title").value).toBe(
+      "YouTube testing"
     );
     expect(
       document.querySelector(".site-rule .site-subtitleNudgeEnabledByDefault")
@@ -185,9 +200,13 @@ describe("options page", () => {
 
     globalThis.createSiteRule(null);
     const rule = document.querySelector(".site-rule");
+    rule.querySelector(".site-title").value = "My YouTube rule";
     rule.querySelector(".site-pattern").value = "youtube.com";
     rule.querySelector(".override-playback").checked = true;
     rule.querySelector(".site-rememberSpeed").checked = true;
+    rule.querySelector(".site-preferredSpeed").value = "2.4";
+    rule.querySelector(".override-shortcut-target").checked = true;
+    rule.querySelector(".site-shortcutTargetMode").value = "all";
     rule.querySelector(".override-opacity").checked = true;
     rule.querySelector(".site-controllerOpacity").value = "0";
     rule.querySelector(".override-subtitleNudge").checked = true;
@@ -207,11 +226,9 @@ describe("options page", () => {
 
     globalThis.save_options();
 
-    expect(chrome.storage.sync.remove).toHaveBeenCalled();
-    const savedSettings =
-      chrome.storage.sync.set.mock.calls[
-        chrome.storage.sync.set.mock.calls.length - 1
-      ][0];
+    const savedSettings = globalThis.vscExpandStoredSettings(
+      chrome.storage.sync.__state
+    );
 
     expect(savedSettings.rememberSpeed).toBe(true);
     expect(savedSettings.hideWithControlsTimer).toBe(15);
@@ -219,23 +236,60 @@ describe("options page", () => {
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
     expect(savedSettings.subtitleNudgeEnabledByDefault).toBe(false);
-    expect(savedSettings.subtitleNudgeInterval).toBe(10);
+    expect(savedSettings.subtitleNudgeInterval).toBe(250);
     expect(savedSettings.showPopupControlBar).toBe(false);
     expect(savedSettings.popupMatchHoverControls).toBe(false);
     expect(savedSettings.popupControllerButtons).toEqual(["rewind", "faster"]);
     expect(savedSettings.siteRules).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+        title: "My YouTube rule",
         pattern: "youtube.com",
         rememberSpeed: true,
+        shortcutTargetMode: "all",
+        preferredSpeed: 2.4,
         controllerOpacity: 0,
         enableSubtitleNudge: true,
         subtitleNudgeEnabledByDefault: false,
-        subtitleNudgeInterval: 75,
+        subtitleNudgeInterval: 250,
         showPopupControlBar: false,
         popupControllerButtons: ["advance"]
       })
       ])
     );
+  });
+
+  it("restores managed defaults and clears private local UI/runtime data", async () => {
+    const chrome = await setupOptions({
+      sync: {
+        rememberSpeed: true,
+        siteRules: [],
+        lastSpeed: 1.6,
+        futureRuntimeValue: "keep"
+      },
+      local: {
+        customButtonIcons: { faster: { slug: "rocket" } },
+        rememberedSpeeds: { "https://example.com/video.mp4": 1.75 },
+        unrelatedLocalValue: "keep"
+      }
+    });
+
+    globalThis.restore_defaults();
+    await flushAsyncWork();
+
+    const raw = chrome.storage.sync.__state;
+    const restored = globalThis.vscExpandStoredSettings(raw);
+    expect(restored.rememberSpeed).toBe(false);
+    expect(restored.siteRules).toEqual(
+      globalThis.vscGetSettingsDefaults().siteRules
+    );
+    expect(raw.lastSpeed).toBe(1);
+    expect(raw.futureRuntimeValue).toBe("keep");
+    expect(chrome.storage.local.__state.customButtonIcons).toBeUndefined();
+    expect(chrome.storage.local.__state.rememberedSpeeds).toBeUndefined();
+    expect(
+      chrome.storage.local.__state.rememberedSpeedsResetAt
+    ).toEqual(expect.any(Number));
+    expect(chrome.storage.local.__state.unrelatedLocalValue).toBe("keep");
   });
 });

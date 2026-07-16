@@ -10,6 +10,7 @@ async function setupPopup(overrides = {}) {
   loadHtml("extension/popup/popup.html");
   globalThis.chrome = createChromeMock(overrides);
   window.chrome = globalThis.chrome;
+  loadScript("extension/shared/settings-core.js");
   loadScript("extension/shared/site-rules.js");
   loadScript("extension/shared/popup-controls.js");
   loadScript("extension/shared/ui-icons.js");
@@ -152,10 +153,44 @@ describe("popup UI", () => {
       1,
       {
         action: "set_force_last_saved_speed",
-        enabled: true,
-        speed: 1.8
+        enabled: true
       },
       expect.any(Function)
+    );
+  });
+
+  it("keeps the global force setting unchanged when a site rule controls it", async () => {
+    const chrome = await setupPopup({
+      sync: {
+        forceLastSavedSpeed: false,
+        siteRules: [
+          {
+            pattern: "example.com",
+            enabled: true,
+            forceLastSavedSpeed: true
+          }
+        ]
+      }
+    });
+    const forceButton = document.getElementById("forceLastSavedSpeed");
+    expect(forceButton.getAttribute("aria-pressed")).toBe("true");
+    const storageBeforeClick = JSON.parse(
+      JSON.stringify(chrome.storage.sync.__state)
+    );
+    chrome.storage.sync.set.mockClear();
+    chrome.storage.sync.remove.mockClear();
+    chrome.tabs.sendMessage.mockClear();
+
+    forceButton.click();
+    await flushAsyncWork();
+
+    expect(chrome.storage.sync.__state).toEqual(storageBeforeClick);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(forceButton.getAttribute("aria-pressed")).toBe("true");
+    expect(document.getElementById("status").textContent).toBe(
+      "Force setting is controlled by this site rule."
     );
   });
 });

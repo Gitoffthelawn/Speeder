@@ -250,7 +250,9 @@ describe("inject runtime", () => {
     loadScript("extension/content/inject.js");
 
     // Fast-forward 3000ms for delayed rescan to trigger
-    vi.advanceTimersByTime(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    // The bounded discovery pass yields to an idle callback before traversing.
+    await vi.advanceTimersByTimeAsync(2000);
 
     for (let i = 0; i < 5; i += 1) {
       await flushAsyncWork();

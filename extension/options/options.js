@@ -162,58 +162,72 @@ function createDefaultBinding(action, code, value) {
   };
 }
 
-var tcDefaults = {
-  speed: 1.0,
-  lastSpeed: 1.0,
-  rememberSpeed: false,
-  audioBoolean: false,
-  startHidden: false,
-  hideWithYouTubeControls: false,
-  hideWithControls: false,
-  hideWithControlsTimer: 2.0,
-  controllerLocation: "top-left",
-  forceLastSavedSpeed: false,
-  enabled: true,
-  controllerOpacity: 0.3,
-  controllerMarginTop: 0,
-  controllerMarginRight: 0,
-  controllerMarginBottom: 65,
-  controllerMarginLeft: 0,
-  keyBindings: [
-    createDefaultBinding("display", "KeyV", 0),
-    createDefaultBinding("move", "KeyP", 0),
-    createDefaultBinding("slower", "KeyS", 0.1),
-    createDefaultBinding("faster", "KeyD", 0.1),
-    createDefaultBinding("rewind", "KeyZ", 10),
-    createDefaultBinding("advance", "KeyX", 10),
-    createDefaultBinding("reset", "KeyR", 1),
-    createDefaultBinding("fast", "KeyG", 1.8),
-    createDefaultBinding("toggleSubtitleNudge", "KeyN", 0)
-  ],
-  siteRules: [
-    {
-      pattern: "/^https:\\/\\/(www\\.)?youtube\\.com\\/(?!shorts\\/).*/",
-      enabled: true,
-      enableSubtitleNudge: true,
-      subtitleNudgeInterval: 50
-    },
-    {
-      pattern: "/^https:\\/\\/(www\\.)?youtube\\.com\\/shorts\\/.*/",
-      enabled: true,
-      rememberSpeed: true,
-      controllerMarginTop: 60,
-      controllerMarginBottom: 85
+var tcDefaults = vscGetSettingsDefaults();
+var optionsSyncSettingsLoaded = false;
+
+function setOptionsSyncSettingsLoaded(loaded) {
+  optionsSyncSettingsLoaded = loaded === true;
+  var saveButton = document.getElementById("save");
+  if (saveButton) {
+    saveButton.disabled = !optionsSyncSettingsLoaded;
+    saveButton.setAttribute(
+      "aria-busy",
+      optionsSyncSettingsLoaded ? "false" : "true"
+    );
+  }
+}
+
+function persistManagedSyncSettings(settings, callback, existingStorage) {
+  function persistFromRaw(rawStorage) {
+    // Preserve canonical values that this version of the Options UI does not
+    // expose (for example legacy left/right placement margins). A caller can
+    // still reset every managed value by passing the complete defaults object.
+    var completeSettings = vscDeepMergeDefaults(
+      vscExpandStoredSettings(rawStorage || {}),
+      settings || {}
+    );
+    var mutation = vscBuildManagedStorageMutation(
+      rawStorage,
+      completeSettings
+    );
+
+    function removeStaleKeys() {
+      if (!mutation.remove.length) {
+        callback(null);
+        return;
+      }
+      chrome.storage.sync.remove(mutation.remove, function () {
+        callback(chrome.runtime.lastError || null);
+      });
     }
-  ],
-  controllerButtons: ["rewind", "slower", "faster", "advance", "display"],
-  showPopupControlBar: true,
-  popupMatchHoverControls: true,
-  popupControllerButtons: ["rewind", "slower", "faster", "advance", "display"],
-  enableSubtitleNudge: false,
-  subtitleNudgeEnabledByDefault: true,
-  subtitleNudgeInterval: 50,
-  subtitleNudgeAmount: 0.001
-};
+
+    if (Object.keys(mutation.set).length === 0) {
+      removeStaleKeys();
+      return;
+    }
+
+    chrome.storage.sync.set(mutation.set, function () {
+      if (chrome.runtime.lastError) {
+        callback(chrome.runtime.lastError);
+        return;
+      }
+      removeStaleKeys();
+    });
+  }
+
+  if (existingStorage && typeof existingStorage === "object") {
+    persistFromRaw(existingStorage);
+    return;
+  }
+
+  chrome.storage.sync.get(null, function (rawStorage) {
+    if (chrome.runtime.lastError) {
+      callback(chrome.runtime.lastError);
+      return;
+    }
+    persistFromRaw(rawStorage || {});
+  });
+}
 
 const actionLabels = {
   display: "Show/hide controller",
@@ -261,14 +275,11 @@ function getDefaultShortcutValue(action) {
 }
 
 function resolveShortcutValue(action, value) {
-  if (value === undefined || value === null) {
-    return getDefaultShortcutValue(action);
-  }
-  var numericValue = Number(value);
-  if (Number.isFinite(numericValue)) {
-    return numericValue;
-  }
-  return 0;
+  return keyBindingUtils.sanitizeActionValue(
+    action,
+    value,
+    getDefaultShortcutValue(action)
+  );
 }
 
 const customActionsNoValues = [
@@ -404,6 +415,16 @@ function clampMarginPxInput(el, fallback) {
 function parseFiniteNumberOrFallback(value, fallback) {
   var numericValue = parseFloat(value);
   return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function readOptionalPreferredSpeedInput(input) {
+  var rawValue = input && typeof input.value === "string"
+    ? input.value.trim()
+    : "";
+  if (!rawValue) return undefined;
+  var parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.min(16, Math.max(0.0625, parsed));
 }
 
 function updateSiteRuleToggleIcon(toggleButton, action) {
@@ -726,13 +747,31 @@ function createKeyBindings(item) {
     };
   }
 
+  var bindingValue = 0;
+  if (!customActionsNoValues.includes(action)) {
+    var valueError = keyBindingUtils.getActionValueError(
+      action,
+      valueInput.value
+    );
+    if (valueError) {
+      return {
+        valid: false,
+        message:
+          "Error: Value for " +
+          (actionLabels[action] || action) +
+          " " +
+          valueError +
+          ". Unable to save"
+      };
+    }
+    bindingValue = Number(valueInput.value);
+  }
+
   keyBindings.push({
     action: action,
     code: binding.code,
     disabled: binding.disabled === true,
-    value: customActionsNoValues.includes(action)
-      ? 0
-      : Number(valueInput.value),
+    value: bindingValue,
     force: false,
     predefined: predefined
   });
@@ -768,10 +807,15 @@ function validate() {
 }
 
 function save_options() {
+  var status = document.getElementById("status");
+  if (!optionsSyncSettingsLoaded) {
+    status.textContent =
+      "Error: Settings have not loaded. Retry before saving.";
+    return;
+  }
   if (validate() === false) return;
 
   keyBindings = [];
-  var status = document.getElementById("status");
   var saveError = null;
 
   // Collect shortcuts from the main shortcuts section (both default and custom)
@@ -793,6 +837,10 @@ function save_options() {
   settings.audioBoolean = document.getElementById("audioBoolean").checked;
   settings.enabled = document.getElementById("enabled").checked;
   settings.startHidden = document.getElementById("startHidden").checked;
+  settings.shortcutTargetMode =
+    document.getElementById("shortcutTargetMode").value === "all"
+      ? "all"
+      : "closest";
   settings.hideWithControls = document.getElementById("hideWithControls").checked;
   settings.hideWithControlsTimer =
     Math.min(15, Math.max(0.1, parseFloat(document.getElementById("hideWithControlsTimer").value) || tcDefaults.hideWithControlsTimer));
@@ -829,10 +877,9 @@ function save_options() {
   settings.subtitleNudgeInterval =
     parseInt(document.getElementById("subtitleNudgeInterval").value, 10) ||
     tcDefaults.subtitleNudgeInterval;
-  settings.subtitleNudgeAmount = tcDefaults.subtitleNudgeAmount;
 
-  if (settings.subtitleNudgeInterval < 10) {
-    settings.subtitleNudgeInterval = 10;
+  if (settings.subtitleNudgeInterval < 250) {
+    settings.subtitleNudgeInterval = 250;
   }
   if (settings.subtitleNudgeInterval > 1000) {
     settings.subtitleNudgeInterval = 1000;
@@ -851,10 +898,24 @@ function save_options() {
     var pattern = ruleEl.querySelector(".site-pattern").value.trim();
     if (pattern.length === 0) return;
 
-    var rule = { pattern: pattern };
+    var rule = vscClonePlainData(ruleEl.vscOriginalRule) || {};
+    rule.pattern = pattern;
+    var title = ruleEl.querySelector(".site-title").value.trim();
+    if (title) rule.title = title;
+    else delete rule.title;
+    delete rule.disableExtension;
 
     // Handle Enable toggle
     rule.enabled = ruleEl.querySelector(".site-enabled").checked;
+
+    if (ruleEl.querySelector(".override-shortcut-target").checked) {
+      rule.shortcutTargetMode =
+        ruleEl.querySelector(".site-shortcutTargetMode").value === "all"
+          ? "all"
+          : "closest";
+    } else {
+      delete rule.shortcutTargetMode;
+    }
 
     if (ruleEl.querySelector(".override-placement").checked) {
       rule.controllerLocation = normalizeControllerLocation(
@@ -874,10 +935,16 @@ function save_options() {
           tcDefaults.controllerMarginBottom
         )
       );
+    } else {
+      delete rule.controllerLocation;
+      delete rule.controllerMarginTop;
+      delete rule.controllerMarginBottom;
     }
 
     if (ruleEl.querySelector(".override-visibility").checked) {
       rule.startHidden = ruleEl.querySelector(".site-startHidden").checked;
+    } else {
+      delete rule.startHidden;
     }
 
     if (ruleEl.querySelector(".override-autohide").checked) {
@@ -889,13 +956,29 @@ function save_options() {
         15,
         Math.max(0.1, Number.isFinite(st) ? st : settings.hideWithControlsTimer)
       );
+    } else {
+      delete rule.hideWithControls;
+      delete rule.hideWithControlsTimer;
     }
 
     if (ruleEl.querySelector(".override-playback").checked) {
       rule.rememberSpeed = ruleEl.querySelector(".site-rememberSpeed").checked;
       rule.forceLastSavedSpeed =
         ruleEl.querySelector(".site-forceLastSavedSpeed").checked;
+      var preferredSpeed = readOptionalPreferredSpeedInput(
+        ruleEl.querySelector(".site-preferredSpeed")
+      );
+      if (preferredSpeed === undefined) {
+        delete rule.preferredSpeed;
+      } else {
+        rule.preferredSpeed = preferredSpeed;
+      }
       rule.audioBoolean = ruleEl.querySelector(".site-audioBoolean").checked;
+    } else {
+      delete rule.rememberSpeed;
+      delete rule.forceLastSavedSpeed;
+      delete rule.preferredSpeed;
+      delete rule.audioBoolean;
     }
 
     if (ruleEl.querySelector(".override-opacity").checked) {
@@ -904,6 +987,8 @@ function save_options() {
           ruleEl.querySelector(".site-controllerOpacity").value,
           settings.controllerOpacity
         );
+    } else {
+      delete rule.controllerOpacity;
     }
 
     if (ruleEl.querySelector(".override-subtitleNudge").checked) {
@@ -918,10 +1003,14 @@ function save_options() {
       rule.subtitleNudgeInterval = Math.min(
         1000,
         Math.max(
-          10,
+          250,
           Number.isFinite(nudgeIv) ? nudgeIv : settings.subtitleNudgeInterval
         )
       );
+    } else {
+      delete rule.enableSubtitleNudge;
+      delete rule.subtitleNudgeEnabledByDefault;
+      delete rule.subtitleNudgeInterval;
     }
 
     if (ruleEl.querySelector(".override-controlbar").checked) {
@@ -929,6 +1018,8 @@ function save_options() {
       if (activeZone) {
         rule.controllerButtons = readControlBarOrder(activeZone);
       }
+    } else {
+      delete rule.controllerButtons;
     }
 
     if (ruleEl.querySelector(".override-popup-controlbar").checked) {
@@ -940,6 +1031,9 @@ function save_options() {
           readControlBarOrder(popupActiveZone)
         );
       }
+    } else {
+      delete rule.showPopupControlBar;
+      delete rule.popupControllerButtons;
     }
 
     if (ruleEl.querySelector(".override-shortcuts").checked) {
@@ -971,37 +1065,56 @@ function save_options() {
           return;
         }
 
+        var shortcutValue = 0;
+        if (!customActionsNoValues.includes(action)) {
+          var shortcutValueError = keyBindingUtils.getActionValueError(
+            action,
+            valueInput.value
+          );
+          if (shortcutValueError) {
+            saveError =
+              "Error: Site rule value for " +
+              (actionLabels[action] || action) +
+              " " +
+              shortcutValueError +
+              ". Unable to save";
+            return;
+          }
+          shortcutValue = Number(valueInput.value);
+        }
+
         shortcuts.push({
           action: action,
           code: binding.code,
           disabled: binding.disabled === true,
-          value: customActionsNoValues.includes(action)
-            ? 0
-            : Number(valueInput.value),
+          value: shortcutValue,
           force: forceCheckbox ? forceCheckbox.checked : false
         });
       });
       if (saveError) return;
       if (shortcuts.length > 0) rule.shortcuts = shortcuts;
+      else delete rule.shortcuts;
+    } else {
+      delete rule.shortcuts;
     }
 
     settings.siteRules.push(rule);
   });
 
-  // Legacy keys to remove
-  const legacyKeys = [
-    "resetSpeed", "speedStep", "fastSpeed", "rewindTime", "advanceTime",
-    "resetKeyCode", "slowerKeyCode", "fasterKeyCode", "rewindKeyCode",
-    "advanceKeyCode", "fastKeyCode", "blacklist"
-  ];
+  if (saveError) {
+    status.textContent = saveError;
+    return;
+  }
 
-  chrome.storage.sync.remove(legacyKeys, function () {
-    chrome.storage.sync.set(settings, function () {
-      status.textContent = "Options saved";
-      setTimeout(function () {
-        status.textContent = "";
-      }, 1000);
-    });
+  persistManagedSyncSettings(settings, function (error) {
+    if (error) {
+      status.textContent = "Error: Unable to save options - " + error.message;
+      return;
+    }
+    status.textContent = "Options saved";
+    setTimeout(function () {
+      status.textContent = "";
+    }, 1000);
   });
 }
 
@@ -1084,9 +1197,12 @@ function createSiteRule(rule) {
   var template = document.getElementById("siteRuleTemplate");
   var clone = template.content.cloneNode(true);
   var ruleEl = clone.querySelector(".site-rule");
+  ruleEl.vscOriginalRule = vscClonePlainData(rule) || {};
 
   var pattern = rule && rule.pattern ? rule.pattern : "";
   ruleEl.querySelector(".site-pattern").value = pattern;
+  ruleEl.querySelector(".site-title").value =
+    rule && typeof rule.title === "string" ? rule.title : "";
 
   // Make the rule body collapsed by default
   setSiteRuleExpandedState(ruleEl, false);
@@ -1116,6 +1232,17 @@ function createSiteRule(rule) {
     enabledCheckbox.checked = true;
   }
   updateDisabledState();
+
+  ruleEl.querySelector(".override-shortcut-target").checked = Boolean(
+    rule && rule.shortcutTargetMode !== undefined
+  );
+  ruleEl.querySelector(".site-shortcutTargetMode").value =
+    rule && rule.shortcutTargetMode === "all" ? "all" : "closest";
+  applySiteRuleOverrideState(
+    ruleEl,
+    "override-shortcut-target",
+    "site-shortcut-target-container"
+  );
 
   var placementKeys = [
     "controllerLocation",
@@ -1150,11 +1277,16 @@ function createSiteRule(rule) {
     rule &&
     (rule.rememberSpeed !== undefined ||
       rule.forceLastSavedSpeed !== undefined ||
+      rule.preferredSpeed !== undefined ||
       rule.audioBoolean !== undefined)
   );
   ruleEl.querySelector(".override-playback").checked = hasPlaybackOverride;
   syncSiteRuleField(ruleEl, rule, "rememberSpeed", true);
   syncSiteRuleField(ruleEl, rule, "forceLastSavedSpeed", true);
+  ruleEl.querySelector(".site-preferredSpeed").value =
+    rule && Number.isFinite(Number(rule.preferredSpeed))
+      ? String(rule.preferredSpeed)
+      : "";
   syncSiteRuleField(ruleEl, rule, "audioBoolean", true);
   applySiteRuleOverrideState(ruleEl, "override-playback", "site-playback-container");
 
@@ -1621,11 +1753,26 @@ function initLucideButtonIconsUI() {
   }
 }
 
-function restore_options() {
-  chrome.storage.sync.get(tcDefaults, function (storage) {
+function restore_options(callback) {
+  var done = typeof callback === "function" ? callback : function () {};
+  var status = document.getElementById("status");
+  setOptionsSyncSettingsLoaded(false);
+  chrome.storage.sync.get(null, function (rawStorage) {
+    var syncError = chrome.runtime.lastError;
+    if (syncError) {
+      status.textContent =
+        "Error: Unable to load options - " + syncError.message;
+      done(syncError);
+      return;
+    }
+    var storage = vscExpandStoredSettings(rawStorage || {});
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
+      var localError = chrome.runtime.lastError;
       customButtonIconsLive =
-        loc && loc.customButtonIcons && typeof loc.customButtonIcons === "object"
+        !localError &&
+        loc &&
+        loc.customButtonIcons &&
+        typeof loc.customButtonIcons === "object"
           ? loc.customButtonIcons
           : {};
 
@@ -1635,13 +1782,11 @@ function restore_options() {
     document.getElementById("audioBoolean").checked = storage.audioBoolean;
     document.getElementById("enabled").checked = storage.enabled;
     document.getElementById("startHidden").checked = storage.startHidden;
+    document.getElementById("shortcutTargetMode").value =
+      storage.shortcutTargetMode === "all" ? "all" : "closest";
 
-    // Migration/Normalization for hideWithControls
-    const hideWithControls = typeof storage.hideWithControls !== "undefined"
-      ? storage.hideWithControls
-      : storage.hideWithYouTubeControls;
-    
-    document.getElementById("hideWithControls").checked = hideWithControls;
+    document.getElementById("hideWithControls").checked =
+      storage.hideWithControls;
     document.getElementById("hideWithControlsTimer").value = 
       storage.hideWithControlsTimer || tcDefaults.hideWithControlsTimer;
 
@@ -1699,11 +1844,7 @@ function restore_options() {
 
     refreshAddShortcutSelector();
 
-    // Load site rules (use defaults if none in storage or empty array)
-    var siteRules =
-      Array.isArray(storage.siteRules) && storage.siteRules.length > 0
-        ? storage.siteRules
-        : tcDefaults.siteRules || [];
+    var siteRules = Array.isArray(storage.siteRules) ? storage.siteRules : [];
 
     vscClearElement(document.getElementById("siteRulesContainer"));
     if (siteRules.length > 0) {
@@ -1729,25 +1870,87 @@ function restore_options() {
     updatePopupEditorDisabledState();
 
     initLucideButtonIconsUI();
+    setOptionsSyncSettingsLoaded(true);
+    if (localError) {
+      status.textContent =
+        "Warning: Options loaded, but custom icons could not be read - " +
+        localError.message;
+    }
+    done(localError || null);
     });
   });
 }
 
 function restore_defaults() {
-  document.querySelectorAll(".customs:not([id])").forEach((el) => el.remove());
+  var status = document.getElementById("status");
+  var restoreButton = document.getElementById("restore");
+  setOptionsSyncSettingsLoaded(false);
+  if (restoreButton) restoreButton.disabled = true;
 
-  chrome.storage.local.remove(
-    ["customButtonIcons", "lucideTagsCacheV1", "lucideTagsCacheV1At"],
-    function () {}
-  );
+  function finishRestore(error) {
+    // Leave the storage callback before rereading. Besides avoiding nested API
+    // calls, this prevents a callback-scoped runtime.lastError from being
+    // mistaken for an error from the fresh read.
+    Promise.resolve().then(function () {
+      restore_options(function (reloadError) {
+        if (restoreButton) restoreButton.disabled = false;
+        if (error) {
+          status.textContent =
+            "Error: Unable to restore all defaults - " + error.message;
+          return;
+        }
+        if (reloadError) {
+          status.textContent =
+            "Defaults restored, but the options page could not reload - " +
+            reloadError.message;
+          return;
+        }
+        status.textContent = "Default options restored";
+        setTimeout(function () {
+          status.textContent = "";
+        }, 1000);
+      });
+    });
+  }
 
-  chrome.storage.sync.set(tcDefaults, function () {
-    restore_options();
-    var status = document.getElementById("status");
-    status.textContent = "Default options restored";
-    setTimeout(function () {
-      status.textContent = "";
-    }, 1000);
+  persistManagedSyncSettings(tcDefaults, function (error) {
+    if (error) {
+      finishRestore(error);
+      return;
+    }
+
+    chrome.storage.sync.set({ lastSpeed: tcDefaults.lastSpeed }, function () {
+      var lastSpeedError = chrome.runtime.lastError;
+      if (lastSpeedError) {
+        finishRestore(lastSpeedError);
+        return;
+      }
+
+      chrome.storage.local.set(
+        {
+          rememberedSpeeds: {},
+          rememberedSpeedsResetAt: Date.now()
+        },
+        function () {
+          var speedResetError = chrome.runtime.lastError;
+          if (speedResetError) {
+            finishRestore(speedResetError);
+            return;
+          }
+          chrome.storage.local.remove(
+            [
+              "customButtonIcons",
+              "lucideTagsCacheV1",
+              "lucideTagsCacheV1At",
+              "rememberedSpeeds"
+            ],
+            function () {
+              finishRestore(chrome.runtime.lastError || null);
+            }
+          );
+        }
+      );
+    });
   });
 }
 

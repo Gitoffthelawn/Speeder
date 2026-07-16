@@ -112,11 +112,62 @@
       : null;
   }
 
+  var defaultActionValues = {
+    slower: 0.1,
+    faster: 0.1,
+    rewind: 10,
+    advance: 10,
+    fast: 1.8,
+    louder: 0.1,
+    softer: 0.1
+  };
+
+  function getActionValueError(action, value) {
+    var numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "must be a finite number";
+    if (
+      (action === "slower" || action === "faster") &&
+      (numericValue <= 0 || numericValue > 16)
+    ) {
+      return "must be greater than 0 and no more than 16";
+    }
+    if (
+      action === "fast" &&
+      (numericValue < 0.0625 || numericValue > 16)
+    ) {
+      return "must be between 0.0625 and 16";
+    }
+    if (
+      (action === "rewind" || action === "advance") &&
+      numericValue < 0
+    ) {
+      return "must be zero or greater";
+    }
+    if (
+      (action === "louder" || action === "softer") &&
+      (numericValue <= 0 || numericValue > 1)
+    ) {
+      return "must be greater than 0 and no more than 1";
+    }
+    return null;
+  }
+
+  function sanitizeActionValue(action, value, fallback) {
+    if (!getActionValueError(action, value)) return Number(value);
+    if (!getActionValueError(action, fallback)) return Number(fallback);
+    if (Object.prototype.hasOwnProperty.call(defaultActionValues, action)) {
+      return defaultActionValues[action];
+    }
+    return 0;
+  }
+
   return {
+    getActionValueError: getActionValueError,
     getLegacyKeyCode: getLegacyKeyCode,
     inferBindingCode: inferBindingCode,
     legacyBindingKeyToCode: legacyBindingKeyToCode,
     legacyKeyCodeToCode: legacyKeyCodeToCode,
-    normalizeBindingKey: normalizeBindingKey
+    normalizeBindingKey: normalizeBindingKey,
+    sanitizeActionValue: sanitizeActionValue
   };
 });
