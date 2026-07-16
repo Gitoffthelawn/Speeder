@@ -905,8 +905,19 @@ button.lucide-result-tile.lucide-picked {
   align-items: center;
 }
 
+.site-rule-identity {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.45fr) minmax(220px, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.site-title,
 .site-pattern {
   min-width: 0;
+}
+
+.site-pattern {
   font-family: "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
@@ -1173,6 +1184,10 @@ button.lucide-result-tile.lucide-picked {
     grid-template-columns: 36px minmax(0, 1fr);
   }
 
+  .site-rule-identity {
+    grid-template-columns: 1fr;
+  }
+
   .remove-site-rule {
     grid-column: 1 / -1;
   }
@@ -1196,6 +1211,10 @@ button.lucide-result-tile.lucide-picked {
   }
 
   .site-rule-header {
+    grid-template-columns: 1fr;
+  }
+
+  .site-rule-identity {
     grid-template-columns: 1fr;
   }
 }

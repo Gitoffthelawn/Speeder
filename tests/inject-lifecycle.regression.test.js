@@ -1,0 +1,851 @@
+const {
+  createChromeMock,
+  evaluateScript,
+  flushAsyncWork,
+  loadHtmlString
+} = require("./helpers/extension-test-utils");
+
+function bootInject(options) {
+  const config = options || {};
+
+  loadHtmlString("<!doctype html><html><body></body></html>", {
+    url: config.url || "https://example.org/"
+  });
+  window.history.replaceState({}, "", config.path || "/");
+
+  const chrome = createChromeMock({
+    syncData: config.syncData,
+    localData: config.localData
+  });
+
+  if (config.syncGetDelayMs) {
+    chrome.storage.sync.get.mockImplementation((keys, callback) => {
+      setTimeout(() => {
+        callback(chrome.storage.sync._dump());
+      }, config.syncGetDelayMs);
+    });
+  }
+
+  global.chrome = chrome;
+  window.chrome = chrome;
+
+  // Keep extension timers under Vitest's clock when a test uses fake timers.
+  window.setTimeout = global.setTimeout.bind(global);
+  window.clearTimeout = global.clearTimeout.bind(global);
+  window.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+  window.cancelAnimationFrame = (id) => clearTimeout(id);
+  window.requestIdleCallback = (callback) =>
+    setTimeout(
+      () =>
+        callback({
+          didTimeout: false,
+          timeRemaining() {
+            return 1;
+          }
+        }),
+      0
+    );
+  window.cancelIdleCallback = (id) => clearTimeout(id);
+
+  evaluateScript("extension/shared/controller-utils.js");
+  evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/settings-core.js");
+  evaluateScript("extension/shared/site-rules.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/content/inject.js");
+
+  return chrome;
+}
+
+async function settleLifecycle(turns = 4) {
+  await flushAsyncWork(turns);
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0);
+    await flushAsyncWork(2);
+  }
+}
+
+function makeRect(left, top, width, height) {
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    x: left,
+    y: top,
+    toJSON() {
+      return this;
+    }
+  };
+}
+
+function setRect(element, rect) {
+  element.getBoundingClientRect = () => rect;
+}
+
+function setBoxMetrics(element, width, height) {
+  Object.defineProperties(element, {
+    offsetWidth: { configurable: true, value: width },
+    offsetHeight: { configurable: true, value: height },
+    clientLeft: { configurable: true, value: 0 },
+    clientTop: { configurable: true, value: 0 }
+  });
+}
+
+function createControlledVideo(options) {
+  const config = options || {};
+  const mount = config.mount || document.createElement("div");
+  const video = document.createElement("video");
+  const mountRect = config.mountRect || makeRect(0, 0, 640, 360);
+  const videoRect = config.videoRect || mountRect;
+
+  setRect(mount, mountRect);
+  setBoxMetrics(mount, mountRect.width, mountRect.height);
+  setRect(video, videoRect);
+  video.src = config.src || "https://example.org/video.mp4";
+  mount.appendChild(video);
+  if (!mount.isConnected) document.body.appendChild(mount);
+
+  window.ensureController(video, mount);
+  return { mount, video, controller: video.vsc, wrapper: video.vsc.div };
+}
+
+function hostIsGeometrySuppressed(host) {
+  const width = host.style.getPropertyValue("width");
+  const height = host.style.getPropertyValue("height");
+  return Boolean(
+    host.hidden ||
+      host.getAttribute("aria-hidden") === "true" ||
+      host.classList.contains("vsc-geometry-hidden") ||
+      host.style.display === "none" ||
+      host.style.visibility === "hidden" ||
+      ((width === "0" || width === "0px") &&
+        (height === "0" || height === "0px"))
+  );
+}
+
+describe("inject.js media/controller lifecycle regressions", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete global.chrome;
+  });
+
+  it("bridges page-world history and shadow creation events", () => {
+    loadHtmlString("<!doctype html><html><body></body></html>");
+    let locationEvents = 0;
+    let shadowEvents = 0;
+    document.addEventListener("speeder-location-changed", () => {
+      locationEvents += 1;
+    });
+    document.addEventListener("speeder-shadow-root-attached", () => {
+      shadowEvents += 1;
+    });
+    evaluateScript("extension/content/shadow-bridge.js");
+
+    window.history.pushState({}, "", "/new-route");
+    const bridgePlayer = document.createElement("bridge-player");
+    document.body.appendChild(bridgePlayer);
+    bridgePlayer.attachShadow({ mode: "open" });
+
+    expect(locationEvents).toBe(1);
+    expect(shadowEvents).toBe(1);
+  });
+
+  it("retries a blocked page bridge and keeps a persistent shadow fallback", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    const firstBridge = document.querySelector(
+      'script[src$="content/shadow-bridge.js"]'
+    );
+    expect(firstBridge).not.toBeNull();
+
+    firstBridge.dispatchEvent(new Event("error"));
+
+    expect(window.vscPageShadowBridgeRequested).toBe(false);
+    expect(window.vscPersistentShadowFallbackTimer).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(
+      document.querySelector('script[src$="content/shadow-bridge.js"]')
+    ).not.toBeNull();
+  });
+
+  it("stops at an immediate player stacking boundary", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const outside = document.createElement("section");
+    const isolatedPlayer = document.createElement("div");
+    const video = document.createElement("video");
+    const rect = makeRect(10, 70, 640, 360);
+
+    isolatedPlayer.style.isolation = "isolate";
+    isolatedPlayer.appendChild(video);
+    outside.appendChild(isolatedPlayer);
+    document.body.appendChild(outside);
+    [outside, isolatedPlayer, video].forEach((element) => setRect(element, rect));
+
+    expect(window.getControllerMount(video)).toBe(isolatedPlayer);
+  });
+
+  it("recovers a controller measured before the player receives layout", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    let mountRect = makeRect(0, 0, 0, 0);
+    let videoRect = makeRect(0, 0, 0, 0);
+
+    setBoxMetrics(mount, 640, 360);
+    mount.getBoundingClientRect = () => mountRect;
+    video.getBoundingClientRect = () => videoRect;
+    video.src = "https://example.org/late-layout.mp4";
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+
+    window.ensureController(video, mount);
+    expect(video.vsc.div.classList.contains("vsc-geometry-hidden")).toBe(true);
+
+    mountRect = makeRect(20, 80, 640, 360);
+    videoRect = makeRect(20, 80, 640, 360);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(video.vsc.div.classList.contains("vsc-geometry-hidden")).toBe(false);
+    expect(video.vsc.div.style.display).not.toBe("none");
+    expect(video.vsc.div.style.getPropertyValue("width")).toBe("640px");
+    expect(video.vsc.div.style.getPropertyValue("height")).toBe("360px");
+  });
+
+  it("keeps YouTube watch, Shorts, and hover controls on the real player boundary", async () => {
+    bootInject({ url: "https://www.youtube.com/" });
+    await settleLifecycle();
+
+    const player = document.createElement("div");
+    player.id = "inline-preview-player";
+    player.className = "html5-video-player";
+    const zeroHeightVideoContainer = document.createElement("div");
+    zeroHeightVideoContainer.className = "html5-video-container";
+    const video = document.createElement("video");
+    const playerRect = makeRect(40, 120, 402, 226);
+
+    setRect(player, playerRect);
+    setBoxMetrics(player, playerRect.width, playerRect.height);
+    setRect(zeroHeightVideoContainer, makeRect(40, 120, 402, 0));
+    setBoxMetrics(zeroHeightVideoContainer, 402, 0);
+    setRect(video, playerRect);
+    video.src = "blob:https://www.youtube.com/hover-preview";
+    zeroHeightVideoContainer.appendChild(video);
+    player.appendChild(zeroHeightVideoContainer);
+    document.body.appendChild(player);
+
+    window.ensureController(video, zeroHeightVideoContainer);
+    window.ensureController(video, zeroHeightVideoContainer);
+
+    expect(video.vsc.div.parentElement).toBe(player);
+    expect(video.vsc.controllerHostMount).toBe(player);
+    expect(video.vsc.div.classList.contains("vsc-geometry-hidden")).toBe(false);
+    expect(video.vsc.div.style.getPropertyValue("width")).toBe("402px");
+    expect(video.vsc.div.style.getPropertyValue("height")).toBe("226px");
+  });
+
+  it("targets the controller nearest the pointer unless change-all is selected", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const first = createControlledVideo({
+      src: "https://example.org/first.mp4",
+      mountRect: makeRect(0, 0, 320, 180)
+    });
+    const second = createControlledVideo({
+      src: "https://example.org/second.mp4",
+      mountRect: makeRect(500, 0, 320, 180)
+    });
+    setRect(window.getControllerElement(first.controller), makeRect(10, 10, 120, 30));
+    setRect(window.getControllerElement(second.controller), makeRect(510, 10, 120, 30));
+
+    document.dispatchEvent(
+      new MouseEvent("mousemove", { bubbles: true, clientX: 600, clientY: 20 })
+    );
+    window.runAction("faster", 0.1);
+
+    expect(first.video.playbackRate).toBe(1);
+    expect(second.video.playbackRate).toBe(1.1);
+
+    window.tc.settings.shortcutTargetMode = "all";
+    window.runAction("faster", 0.1);
+    expect(first.video.playbackRate).toBe(1.1);
+    expect(second.video.playbackRate).toBe(1.2);
+  });
+
+  it("skips GIF-like ambient loops but accepts them if they become real players", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    const rect = makeRect(0, 0, 480, 270);
+    video.autoplay = true;
+    video.defaultMuted = true;
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.controls = false;
+    video.src = "https://example.org/card-loop.mp4";
+    setRect(mount, rect);
+    setBoxMetrics(mount, rect.width, rect.height);
+    setRect(video, rect);
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+
+    expect(window.ensureController(video, mount)).toBeNull();
+    expect(video.vsc).toBeUndefined();
+
+    video.loop = false;
+    video.controls = true;
+    expect(window.ensureController(video, mount)).toBeTruthy();
+    expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("moves the host into an ancestor fullscreen subtree and restores it", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const normalMount = document.createElement("div");
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    const rect = makeRect(0, 0, 640, 360);
+
+    normalMount.style.isolation = "isolate";
+    provider.appendChild(video);
+    fullscreenPlayer.appendChild(provider);
+    normalMount.append(fullscreenPlayer, wrapper);
+    document.body.appendChild(normalMount);
+    [normalMount, fullscreenPlayer, provider, video].forEach((element) => {
+      setRect(element, rect);
+      setBoxMetrics(element, rect.width, rect.height);
+    });
+
+    const controller = {
+      video,
+      div: wrapper,
+      normalControllerMount: normalMount
+    };
+    window.setupControllerHostTracking(controller, wrapper, normalMount);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: fullscreenPlayer
+    });
+
+    window.syncControllerFullscreenMount(controller);
+    expect(fullscreenPlayer.contains(wrapper)).toBe(true);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: null
+    });
+    window.syncControllerFullscreenMount(controller);
+    expect(wrapper.parentElement).toBe(normalMount);
+
+    wrapper.remove();
+    controller.controllerHostCleanup();
+  });
+
+  it("preserves direct-video requestFullscreen semantics and overlays with a popover", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const fullscreenRequests = [];
+    Object.defineProperty(window.Element.prototype, "requestFullscreen", {
+      configurable: true,
+      value: function(options) {
+        fullscreenRequests.push({ target: this, options });
+        Object.defineProperty(document, "fullscreenElement", {
+          configurable: true,
+          value: this
+        });
+        return Promise.resolve();
+      }
+    });
+    evaluateScript("extension/content/shadow-bridge.js");
+
+    const { mount, video, controller, wrapper } = createControlledVideo();
+    wrapper.showPopover = vi.fn();
+    wrapper.hidePopover = vi.fn();
+    await video.requestFullscreen({ navigationUI: "hide" });
+    document.dispatchEvent(new Event("fullscreenchange"));
+
+    window.syncControllerFullscreenMount(controller);
+
+    expect(fullscreenRequests).toEqual([
+      {
+        target: video,
+        options: { navigationUI: "hide" }
+      }
+    ]);
+    expect(document.fullscreenElement).toBe(video);
+    expect(wrapper.showPopover).toHaveBeenCalledOnce();
+    expect(wrapper.parentNode).toBe(mount);
+    expect(video.contains(wrapper)).toBe(false);
+    expect(wrapper.isConnected).toBe(true);
+  });
+
+  it("uses a top-layer popover when native controls fullscreen the video element", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const { mount, video, controller, wrapper } = createControlledVideo();
+    wrapper.showPopover = vi.fn();
+    wrapper.hidePopover = vi.fn();
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: video
+    });
+
+    expect(window.getControllerMount(video, video)).toBe(mount);
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.showPopover).toHaveBeenCalledOnce();
+    expect(wrapper.parentNode).toBe(mount);
+    expect(video.contains(wrapper)).toBe(false);
+    expect(wrapper.getAttribute("popover")).toBe("manual");
+    expect(wrapper.classList.contains("vsc-fullscreen-popover")).toBe(true);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: null
+    });
+    window.syncControllerFullscreenMount(controller);
+
+    expect(wrapper.hidePopover).toHaveBeenCalledOnce();
+    expect(wrapper.hasAttribute("popover")).toBe(false);
+    expect(wrapper.classList.contains("vsc-fullscreen-popover")).toBe(false);
+  });
+
+  it("uses the fullscreen boundary for a portrait video beneath a gesture pane", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    const gesturePane = document.createElement("div");
+    const playerRect = makeRect(0, 0, 1280, 720);
+    const portraitRect = makeRect(440, 10, 400, 700);
+
+    gesturePane.className = "gesture-pane";
+    provider.appendChild(video);
+    fullscreenPlayer.append(provider, gesturePane);
+    document.body.appendChild(fullscreenPlayer);
+    setRect(fullscreenPlayer, playerRect);
+    setRect(gesturePane, playerRect);
+    setRect(provider, portraitRect);
+    setRect(video, portraitRect);
+
+    expect(window.getControllerMount(video, fullscreenPlayer)).toBe(
+      fullscreenPlayer
+    );
+  });
+
+  it("repairs a controller host removed independently of its video", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const { mount, video, wrapper } = createControlledVideo();
+    wrapper.remove();
+    expect(video.isConnected).toBe(true);
+
+    window.ensureController(video, mount);
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.isConnected).toBe(true);
+    expect(video.vsc.div.parentElement).toBe(mount);
+  });
+
+  it("still creates controls when a custom player throws from playbackRate", async () => {
+    bootInject();
+    await settleLifecycle();
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    video.src = "https://example.org/rejecting-player.mp4";
+    Object.defineProperty(video, "playbackRate", {
+      configurable: true,
+      get() {
+        return 1;
+      },
+      set() {
+        throw new Error("rate rejected");
+      }
+    });
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+
+    expect(() => window.ensureController(video, mount)).not.toThrow();
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("remounts an existing controller when its video moves between players", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const mountA = document.createElement("div");
+    const mountB = document.createElement("div");
+    const rect = makeRect(0, 0, 640, 360);
+    [mountA, mountB].forEach((mount) => {
+      setRect(mount, rect);
+      setBoxMetrics(mount, rect.width, rect.height);
+      document.body.appendChild(mount);
+    });
+
+    const { video, wrapper } = createControlledVideo({ mount: mountA });
+    mountB.appendChild(video);
+
+    window.ensureController(video, mountB);
+
+    expect(video.vsc.div).toBe(wrapper);
+    expect(wrapper.parentElement).toBe(mountB);
+    expect(video.vsc.controllerHostMount).toBe(mountB);
+    expect(mountA.querySelector(".vsc-controller")).toBeNull();
+  });
+
+  it("suppresses a zero-size host and reveals it when the video becomes visible", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const mount = document.createElement("div");
+    const mountRect = makeRect(100, 50, 640, 360);
+    let videoRect = makeRect(100, 50, 0, 0);
+    setRect(mount, mountRect);
+    setBoxMetrics(mount, mountRect.width, mountRect.height);
+
+    const video = document.createElement("video");
+    video.src = "https://example.org/preload.mp4";
+    video.getBoundingClientRect = () => videoRect;
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+    window.ensureController(video, mount);
+
+    const wrapper = video.vsc.div;
+    expect(hostIsGeometrySuppressed(wrapper)).toBe(true);
+
+    videoRect = makeRect(140, 80, 320, 180);
+    window.positionControllerHost(wrapper, video, mount);
+
+    expect(hostIsGeometrySuppressed(wrapper)).toBe(false);
+    expect(wrapper.style.getPropertyValue("width")).toBe("320px");
+    expect(wrapper.style.getPropertyValue("height")).toBe("180px");
+  });
+
+  it("chooses visible media over an offscreen player for popup actions", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const offscreen = createControlledVideo({
+      mountRect: makeRect(0, 2000, 1280, 720),
+      videoRect: makeRect(0, 2000, 1280, 720),
+      src: "https://example.org/offscreen.mp4"
+    }).video;
+    const visible = createControlledVideo({
+      mountRect: makeRect(40, 40, 640, 360),
+      videoRect: makeRect(40, 40, 640, 360),
+      src: "https://example.org/visible.mp4"
+    }).video;
+
+    expect(window.getPrimaryVideoElement()).toBe(visible);
+    expect(window.getPrimaryVideoElement()).not.toBe(offscreen);
+  });
+
+  it("mounts a controller locally for video directly under an open ShadowRoot", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const host = document.createElement("custom-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    const rect = makeRect(20, 30, 640, 360);
+    video.src = "https://example.org/shadow.mp4";
+    setRect(host, rect);
+    setBoxMetrics(host, rect.width, rect.height);
+    setRect(video, rect);
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+
+    window.observeRoot(shadow);
+    window.scanRootForMedia(shadow);
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.getRootNode()).toBe(shadow);
+    expect(shadow.contains(video.vsc.div)).toBe(true);
+  });
+
+  it("keeps a shadow player controller in its visible root during host fullscreen", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const host = document.createElement("fullscreen-shadow-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    const rect = makeRect(0, 0, 640, 360);
+    video.src = "https://example.org/shadow-fullscreen.mp4";
+    setRect(host, rect);
+    setBoxMetrics(host, rect.width, rect.height);
+    setRect(video, rect);
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+    window.observeRoot(shadow);
+    window.scanRootForMedia(shadow);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: host
+    });
+    window.syncControllerFullscreenMount(video.vsc);
+
+    expect(window.getControllerMount(video, host)).toBe(shadow);
+    expect(video.vsc.div.parentNode).toBe(shadow);
+    expect(host.contains(video.vsc.div)).toBe(false);
+  });
+
+  it("removes controllers when their open-shadow host is detached", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const host = document.createElement("detached-shadow-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/detached-shadow.mp4";
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+    window.observeRoot(shadow);
+    window.scanRootForMedia(shadow);
+    const wrapper = video.vsc.div;
+
+    host.remove();
+    await settleLifecycle(6);
+
+    expect(video.vsc).toBeUndefined();
+    expect(window.tc.mediaElements).not.toContain(video);
+    expect(wrapper.isConnected).toBe(false);
+  });
+
+  it("starts and ends a controller drag mounted directly in an open ShadowRoot", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const host = document.createElement("drag-shadow-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    const rect = makeRect(20, 30, 640, 360);
+    video.src = "https://example.org/drag-shadow.mp4";
+    setRect(host, rect);
+    setBoxMetrics(host, rect.width, rect.height);
+    setRect(video, rect);
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+    window.observeRoot(shadow);
+    window.scanRootForMedia(shadow);
+
+    expect(() =>
+      window.handleDrag(video, { clientX: 30, clientY: 40 })
+    ).not.toThrow();
+    expect(video.classList.contains("vcs-dragging")).toBe(true);
+
+    host.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    expect(video.classList.contains("vcs-dragging")).toBe(false);
+  });
+
+  it("queues early shadow media until async settings hydration completes", async () => {
+    vi.useFakeTimers();
+    bootInject({ syncGetDelayMs: 100 });
+
+    const host = document.createElement("early-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/early.mp4";
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+    await settleLifecycle();
+
+    expect(video.vsc).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(120);
+    await settleLifecycle();
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.isConnected).toBe(true);
+    expect(video.vsc.div.getRootNode()).toBe(shadow);
+  });
+
+  it("reconciles source children and the emptied lifecycle on an existing controller", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const { video, wrapper } = createControlledVideo();
+    video.preload = "none";
+    video.removeAttribute("src");
+    video.dispatchEvent(new Event("emptied"));
+    await settleLifecycle();
+    expect(wrapper.classList.contains("vsc-nosource")).toBe(true);
+
+    const source = document.createElement("source");
+    source.src = "https://example.org/later.mp4";
+    video.appendChild(source);
+    await settleLifecycle();
+    expect(wrapper.classList.contains("vsc-nosource")).toBe(false);
+
+    source.remove();
+    video.dispatchEvent(new Event("emptied"));
+    await settleLifecycle();
+    expect(wrapper.classList.contains("vsc-nosource")).toBe(true);
+  });
+
+  it("applies the newly matched SPA rule before choosing source-transition speed", async () => {
+    bootInject({
+      path: "/watch/one",
+      syncData: {
+        lastSpeed: 1.8,
+        rememberSpeed: false,
+        siteRules: [
+          {
+            pattern: "example.org/watch/",
+            enabled: true,
+            rememberSpeed: false
+          },
+          {
+            pattern: "example.org/shorts/",
+            enabled: true,
+            rememberSpeed: true
+          }
+        ]
+      },
+      localData: {
+        rememberedSpeeds: {
+          "https://example.org/short-two.mp4": {
+            speed: 1.8,
+            updatedAt: 100
+          }
+        }
+      }
+    });
+    await settleLifecycle();
+
+    const { video } = createControlledVideo({
+      src: "https://example.org/watch-one.mp4"
+    });
+    expect(video.playbackRate).toBe(1);
+
+    window.history.replaceState({}, "", "/shorts/two");
+    video.src = "https://example.org/short-two.mp4";
+    window.applySourceTransitionPolicy(video, true);
+
+    expect(window.tc.activeSiteRule.pattern).toBe("example.org/shorts/");
+    expect(window.tc.settings.rememberSpeed).toBe(true);
+    expect(video.vsc.targetSpeed).toBe(1.8);
+    expect(video.playbackRate).toBe(1.8);
+  });
+
+  it("activates after an initially disabled SPA route becomes enabled", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      path: "/disabled",
+      syncData: {
+        siteRules: [
+          { pattern: "example.org/disabled", enabled: false },
+          { pattern: "example.org/enabled", enabled: true }
+        ]
+      }
+    });
+
+    const video = document.createElement("video");
+    video.src = "https://example.org/enabled.mp4";
+    document.body.appendChild(video);
+    expect(video.vsc).toBeUndefined();
+
+    window.history.pushState({}, "", "/enabled");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await vi.advanceTimersByTimeAsync(350);
+    await settleLifecycle();
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("rescans an existing open-shadow player when an SPA route becomes enabled", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      path: "/disabled",
+      syncData: {
+        siteRules: [
+          { pattern: "example.org/disabled", enabled: false },
+          { pattern: "example.org/enabled", enabled: true }
+        ]
+      }
+    });
+
+    const host = document.createElement("route-shadow-player");
+    const shadow = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/route-shadow.mp4";
+    shadow.appendChild(video);
+    document.body.appendChild(host);
+    window.observeRoot(shadow);
+    expect(video.vsc).toBeUndefined();
+
+    window.history.pushState({}, "", "/enabled");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await vi.advanceTimersByTimeAsync(350);
+    await settleLifecycle();
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div.getRootNode()).toBe(shadow);
+    expect(video.vsc.div.isConnected).toBe(true);
+  });
+
+  it("tears controllers down when an enabled SPA route becomes disabled", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      path: "/enabled",
+      syncData: {
+        siteRules: [
+          { pattern: "example.org/enabled", enabled: true },
+          { pattern: "example.org/disabled", enabled: false }
+        ]
+      }
+    });
+
+    const { video } = createControlledVideo();
+    expect(video.vsc).toBeDefined();
+
+    window.history.pushState({}, "", "/disabled");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await vi.advanceTimersByTimeAsync(350);
+    await settleLifecycle();
+
+    expect(video.vsc).toBeUndefined();
+    expect(document.querySelector(".vsc-controller")).toBeNull();
+  });
+
+  it("removes existing audio controllers when live settings disable audio", async () => {
+    vi.useFakeTimers();
+    const chrome = bootInject({ syncData: { audioBoolean: true } });
+    await settleLifecycle();
+
+    const mount = document.createElement("div");
+    const audio = document.createElement("audio");
+    audio.src = "https://example.org/podcast.mp3";
+    mount.appendChild(audio);
+    document.body.appendChild(mount);
+    window.ensureController(audio, mount);
+    expect(audio.vsc).toBeDefined();
+
+    chrome.storage.sync.set({ audioBoolean: false });
+    await vi.advanceTimersByTimeAsync(100);
+    await settleLifecycle();
+
+    expect(audio.vsc).toBeUndefined();
+  });
+});

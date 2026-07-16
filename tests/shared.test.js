@@ -24,6 +24,53 @@ describe("shared helpers", () => {
     expect(siteRules.isSiteRuleDisabled({ enabled: false })).toBe(true);
   });
 
+  it("matches plain and regex rules against safely decoded URL text", () => {
+    expect(
+      siteRules.siteRuleMatchesUrl(
+        { pattern: "example.com/path?title=Hello World#part one" },
+        "https://example.com/%70ath?title=Hello%20World#part%20one"
+      )
+    ).toBe(true);
+    expect(
+      siteRules.siteRuleMatchesUrl(
+        { pattern: "/example\\.com\\/path\\?title=Hello World#part one/i" },
+        "https://example.com/%70ath?title=Hello%20World#part%20one"
+      )
+    ).toBe(true);
+
+    // Raw matching remains available for rules intentionally written against
+    // the encoded form.
+    expect(
+      siteRules.siteRuleMatchesUrl(
+        { pattern: "/%70ath\\?title=Hello%20World/" },
+        "https://example.com/%70ath?title=Hello%20World"
+      )
+    ).toBe(true);
+  });
+
+  it("tolerates malformed URL escapes and keeps regex matching deterministic", () => {
+    expect(siteRules.safelyDecodeUrlText("/%70%ZZ%E2/end")).toBe(
+      "/p%ZZ%E2/end"
+    );
+    expect(siteRules.safelyDecodeUrlText("/%E2%82%AC%FF%70")).toBe(
+      "/€%FFp"
+    );
+    expect(
+      siteRules.siteRuleMatchesUrl(
+        { pattern: "/example\\.com\\/p%ZZ%E2/" },
+        "https://example.com/%70%ZZ%E2"
+      )
+    ).toBe(true);
+
+    const globalRule = { pattern: "/example\\.com\\/watch/g" };
+    expect(
+      siteRules.siteRuleMatchesUrl(globalRule, "https://example.com/watch")
+    ).toBe(true);
+    expect(
+      siteRules.siteRuleMatchesUrl(globalRule, "https://example.com/watch")
+    ).toBe(true);
+  });
+
   it("combines global enabled with matched site rules (whitelist / blacklist)", () => {
     const allowSite = { pattern: "good.test", enabled: true };
     const blockSite = { pattern: "bad.test", enabled: false };
@@ -173,12 +220,36 @@ describe("shared helpers", () => {
     expect(importExportUtils.isRecognizedRawSettingsObject({ wat: true })).toBe(
       false
     );
+    expect(
+      importExportUtils.isRecognizedRawSettingsObject({
+        siteRulesFormat: "defaults-diff-v2"
+      })
+    ).toBe(true);
+    expect(
+      importExportUtils.extractImportSettings({ settings: [] })
+    ).toBeNull();
+    expect(
+      importExportUtils.extractImportSettings({
+        settings: { enabled: true },
+        localSettings: []
+      })
+    ).toBeNull();
+    [null, "bad", []].forEach((customButtonIcons) => {
+      expect(
+        importExportUtils.extractImportSettings({
+          settings: { enabled: true },
+          localSettings: { customButtonIcons }
+        })
+      ).toBeNull();
+    });
 
     expect(
       importExportUtils.filterLocalSettingsForExport({
         customButtonIcons: { faster: { slug: "zap" } },
         lucideTagsCacheV1: { "a-arrow-down": ["letter"] },
-        lucideTagsCacheV1At: 123
+        lucideTagsCacheV1At: 123,
+        rememberedSpeeds: { "https://example.com/video.mp4": 1.75 },
+        futureRuntimeData: true
       })
     ).toEqual({
       customButtonIcons: { faster: { slug: "zap" } }

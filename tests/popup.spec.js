@@ -6,6 +6,7 @@ const {
   installCommonWindowMocks,
   loadHtmlFile
 } = require("./helpers/extension-test-utils");
+const manifest = require("../extension/manifest.json");
 
 function bootPopup(options) {
   const config = options || {};
@@ -46,6 +47,7 @@ function bootPopup(options) {
   global.chrome = chrome;
   window.chrome = chrome;
 
+  evaluateScript("extension/shared/settings-core.js");
   evaluateScript("extension/shared/site-rules.js");
   evaluateScript("extension/shared/popup-controls.js");
   evaluateScript("extension/shared/ui-icons.js");
@@ -60,6 +62,10 @@ describe("popup.js", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     delete global.chrome;
+  });
+
+  it("declares activeTab for the popup all-frame speed snapshot", () => {
+    expect(manifest.permissions).toContain("activeTab");
   });
 
   it("renders the popup disabled state when a site rule disables Speeder", async () => {
@@ -152,10 +158,10 @@ describe("popup.js", () => {
     expect(document.querySelector("#disable").classList.contains("hide")).toBe(true);
 
     document.querySelector("#enable").click();
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(
-      { enabled: true },
-      expect.any(Function)
-    );
+    expect(chrome.storage.sync._dump()).not.toHaveProperty("enabled");
+    expect(
+      window.vscExpandStoredSettings(chrome.storage.sync._dump()).enabled
+    ).toBe(true);
     expect(chrome.browserAction.setIcon).toHaveBeenCalledWith({
       path: {
         19: "assets/icons/icon19.png",

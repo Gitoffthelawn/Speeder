@@ -25,17 +25,47 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var defaultButtons = ["rewind", "slower", "faster", "advance", "display"];
   var popupExcludedButtonIds = new Set(["settings"]);
-  var storageDefaults = {
-    enabled: true,
-    lastSpeed: 1.0,
-    forceLastSavedSpeed: false,
-    showPopupControlBar: true,
-    controllerButtons: defaultButtons,
-    popupMatchHoverControls: true,
-    popupControllerButtons: defaultButtons,
-    siteRules: []
-  };
   var renderToken = 0;
+  var forceLastSavedSpeedControlledBySiteRule = null;
+
+  function persistExpandedSettings(rawStorage, settings, callback) {
+    var mutation = vscBuildManagedStorageMutation(rawStorage, settings);
+
+    function removeStaleKeys() {
+      if (!mutation.remove.length) {
+        callback(null);
+        return;
+      }
+      chrome.storage.sync.remove(mutation.remove, function () {
+        callback(chrome.runtime.lastError || null);
+      });
+    }
+
+    if (!Object.keys(mutation.set).length) {
+      removeStaleKeys();
+      return;
+    }
+
+    chrome.storage.sync.set(mutation.set, function () {
+      if (chrome.runtime.lastError) {
+        callback(chrome.runtime.lastError);
+        return;
+      }
+      removeStaleKeys();
+    });
+  }
+
+  function updateStoredSettings(update, callback) {
+    chrome.storage.sync.get(null, function (rawStorage) {
+      if (chrome.runtime.lastError) {
+        callback(chrome.runtime.lastError);
+        return;
+      }
+      var settings = vscExpandStoredSettings(rawStorage || {});
+      update(settings);
+      persistExpandedSettings(rawStorage || {}, settings, callback);
+    });
+  }
 
   function updateForceButton(enabled) {
     var button = document.getElementById("forceLastSavedSpeed");
@@ -44,6 +74,13 @@ document.addEventListener("DOMContentLoaded", function () {
     button.title = enabled
       ? "Stop forcing the saved speed"
       : "Keep this page at the last speed saved by Speeder";
+  }
+
+  function setForceButtonLoading(loading) {
+    var button = document.getElementById("forceLastSavedSpeed");
+    if (!button) return;
+    button.disabled = loading === true;
+    button.setAttribute("aria-busy", loading ? "true" : "false");
   }
 
   function matchSiteRule(url, siteRules) {
@@ -131,9 +168,10 @@ document.addEventListener("DOMContentLoaded", function () {
     return popupControlUtils.pickBestFrameSpeedResult(results);
   }
 
-  function querySpeed() {
+  function querySpeed(callback) {
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
       if (!tabs[0] || tabs[0].id == null) {
+        if (callback) callback(null);
         return;
       }
       var tabId = tabs[0].id;
@@ -144,15 +182,18 @@ document.addEventListener("DOMContentLoaded", function () {
           if (chrome.runtime.lastError) {
             sendToActiveTab({ action: "get_speed" }, function (response) {
               applySpeedAndResetFromResponse(response || { speed: 1 });
+              if (callback) callback(response || null);
             });
             return;
           }
           var best = pickBestFrameSpeedResult(results);
           if (best) {
             applySpeedAndResetFromResponse(best);
+            if (callback) callback(best);
           } else {
             sendToActiveTab({ action: "get_speed" }, function (response) {
               applySpeedAndResetFromResponse(response || { speed: 1 });
+              if (callback) callback(response || null);
             });
           }
         }
@@ -269,39 +310,69 @@ document.addEventListener("DOMContentLoaded", function () {
   if (!forceLastSavedSpeedButton.dataset.listenerAttached) {
     forceLastSavedSpeedButton.dataset.listenerAttached = "true";
     forceLastSavedSpeedButton.addEventListener("click", function () {
+      if (forceLastSavedSpeedControlledBySiteRule === null) {
+        setStatusMessage("Loading page settings...");
+        return;
+      }
+      if (forceLastSavedSpeedControlledBySiteRule) {
+        setStatusMessage("Force setting is controlled by this site rule.");
+        return;
+      }
+
       var button = this;
       var enabled = button.getAttribute("aria-pressed") !== "true";
-      chrome.storage.sync.get({ lastSpeed: 1.0 }, function (storage) {
-        chrome.storage.sync.set({ forceLastSavedSpeed: enabled }, function () {
-          updateForceButton(enabled);
+      updateStoredSettings(
+        function (settings) {
+          settings.forceLastSavedSpeed = enabled;
+        },
+        function (error) {
+          if (error) {
+            setStatusMessage("Could not update speed forcing: " + error.message);
+            return;
+          }
           sendToActiveTab(
             {
               action: "set_force_last_saved_speed",
-              enabled: enabled,
-              speed: Number(storage.lastSpeed) || 1.0
+              enabled: enabled
             },
             function (response) {
+              var effectiveEnabled =
+                response && typeof response.enabled === "boolean"
+                  ? response.enabled
+                  : enabled;
+              updateForceButton(effectiveEnabled);
+              if (effectiveEnabled !== enabled) {
+                setStatusMessage("Force setting is controlled by this site rule.");
+                if (response && response.speed != null) {
+                  updateSpeedDisplay(response.speed);
+                }
+                return;
+              }
               if (response && response.speed != null) {
                 updateSpeedDisplay(response.speed);
                 setStatusMessage(
-                  enabled ? "Saved speed is now forced." : "Speed forcing is off."
+                  effectiveEnabled
+                    ? "Saved speed is now forced."
+                    : "Speed forcing is off."
                 );
               } else {
                 setStatusMessage(
-                  enabled
+                  effectiveEnabled
                     ? "Force enabled. No video found on this page."
                     : "Speed forcing is off."
                 );
               }
             }
           );
-        });
-      });
+        }
+      );
     });
   }
 
   function renderForActiveTab() {
     var currentRenderToken = ++renderToken;
+    forceLastSavedSpeedControlledBySiteRule = null;
+    setForceButtonLoading(true);
 
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
       if (currentRenderToken !== renderToken) return;
@@ -310,46 +381,75 @@ document.addEventListener("DOMContentLoaded", function () {
           ? loc.customButtonIcons
           : {};
 
-      chrome.storage.sync.get(storageDefaults, function (storage) {
+      chrome.storage.sync.get(null, function (rawStorage) {
         if (currentRenderToken !== renderToken) return;
+        var storage = vscExpandStoredSettings(rawStorage || {});
 
-      getActiveTabContext(function (context) {
-        if (currentRenderToken !== renderToken) return;
+        getActiveTabContext(function (context) {
+          if (currentRenderToken !== renderToken) return;
 
-        var url = context && context.url ? context.url : "";
-        var siteRule = matchSiteRule(url, storage.siteRules);
-        var siteDisabled = isSiteRuleDisabled(siteRule);
-        var siteAvailable = siteRuleUtils.isSpeederActiveForSite(
-          storage.enabled,
-          siteRule
-        );
-        var showBar = storage.showPopupControlBar !== false;
+          var url = context && context.url ? context.url : "";
+          var siteRule = matchSiteRule(url, storage.siteRules);
+          var siteDisabled = isSiteRuleDisabled(siteRule);
+          var siteAvailable = siteRuleUtils.isSpeederActiveForSite(
+            storage.enabled,
+            siteRule
+          );
+          var showBar = storage.showPopupControlBar !== false;
+          forceLastSavedSpeedControlledBySiteRule = Boolean(
+            siteRule && siteRule.forceLastSavedSpeed !== undefined
+          );
+          var effectiveForceLastSavedSpeed =
+            forceLastSavedSpeedControlledBySiteRule
+              ? siteRule.forceLastSavedSpeed === true
+              : storage.forceLastSavedSpeed === true;
 
-        if (siteRule && siteRule.showPopupControlBar !== undefined) {
-          showBar = siteRule.showPopupControlBar;
-        }
+          if (siteRule && siteRule.showPopupControlBar !== undefined) {
+            showBar = siteRule.showPopupControlBar;
+          }
 
-        toggleEnabledUI(storage.enabled !== false);
-        updateForceButton(storage.forceLastSavedSpeed === true);
-        buildControlBar(
-          resolvePopupButtons(storage, siteRule),
-          customIconsMap
-        );
-        setControlBarVisible(siteAvailable && showBar);
+          toggleEnabledUI(storage.enabled !== false);
+          updateForceButton(effectiveForceLastSavedSpeed);
+          buildControlBar(
+            resolvePopupButtons(storage, siteRule),
+            customIconsMap
+          );
+          setControlBarVisible(siteAvailable && showBar);
 
-        if (siteDisabled) {
-          setStatusMessage("Speeder is disabled for this site.");
-          updateSpeedDisplay(1);
-          return;
-        }
+          if (siteDisabled) {
+            setForceButtonLoading(false);
+            setStatusMessage("Speeder is disabled for this site.");
+            updateSpeedDisplay(1);
+            return;
+          }
 
-        clearStatusMessage();
-        if (siteAvailable) {
-          querySpeed();
-        } else {
-          updateSpeedDisplay(1);
-        }
-      });
+          clearStatusMessage();
+          if (siteAvailable) {
+            querySpeed(function(frameContext) {
+              if (currentRenderToken !== renderToken) return;
+              if (
+                frameContext &&
+                typeof frameContext.forceLastSavedSpeed === "boolean"
+              ) {
+                effectiveForceLastSavedSpeed =
+                  frameContext.forceLastSavedSpeed;
+              }
+              if (
+                frameContext &&
+                typeof frameContext.forceLastSavedSpeedControlledBySiteRule ===
+                  "boolean"
+              ) {
+                forceLastSavedSpeedControlledBySiteRule =
+                  frameContext.forceLastSavedSpeedControlledBySiteRule;
+              }
+              updateForceButton(effectiveForceLastSavedSpeed);
+              setForceButtonLoading(false);
+            });
+          } else {
+            updateSpeedDisplay(1);
+            setForceButtonLoading(false);
+          }
+        });
       });
     });
   }
@@ -378,7 +478,9 @@ document.addEventListener("DOMContentLoaded", function () {
       changes.controllerButtons ||
       changes.popupMatchHoverControls ||
       changes.popupControllerButtons ||
-      changes.siteRules
+      changes.siteRules ||
+      changes.siteRulesMeta ||
+      changes.siteRulesFormat
     ) {
       renderForActiveTab();
     }
@@ -387,10 +489,19 @@ document.addEventListener("DOMContentLoaded", function () {
   renderForActiveTab();
 
   function toggleEnabled(enabled, callback) {
-    chrome.storage.sync.set({ enabled: enabled }, function () {
-      toggleEnabledUI(enabled);
-      if (callback) callback(enabled);
-    });
+    updateStoredSettings(
+      function (settings) {
+        settings.enabled = enabled;
+      },
+      function (error) {
+        if (error) {
+          setStatusMessage("Could not update Speeder: " + error.message);
+          return;
+        }
+        toggleEnabledUI(enabled);
+        if (callback) callback(enabled);
+      }
+    );
   }
 
   function toggleEnabledUI(enabled) {

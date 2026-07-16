@@ -44,9 +44,10 @@ function applyJSDOMWindow(win) {
   win.close = vi.fn();
 }
 
-function loadHtmlString(html) {
+function loadHtmlString(html, options) {
+  const config = options || {};
   const dom = new JSDOM(html, {
-    url: "https://example.org/",
+    url: config.url || "https://example.org/",
     pretendToBeVisual: true,
     runScripts: "dangerously"
   });

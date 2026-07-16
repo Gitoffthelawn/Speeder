@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="options.css" />
     <script src="../shared/controller-utils.js"></script>
     <script src="../shared/key-bindings.js"></script>
+    <script src="../shared/settings-core.js"></script>
     <script src="../shared/popup-controls.js"></script>
     <script src="../shared/ui-icons.js"></script>
     <script src="lucide-client.js"></script>
@@ -289,9 +290,9 @@
             <label for="rememberSpeed"
               >Remember playback speed<br />
               <em
-                >Stores speed per source so revisiting the same media can restore
-                it. Separate from &ldquo;Force last saved speed,&rdquo; which
-                fights players that reset rate.</em
+                >Stores speeds you set with Speeder per source so revisiting the
+                same media can restore them. Separate from &ldquo;Force last
+                saved speed,&rdquo; which fights players that reset rate.</em
               >
             </label>
             <input id="rememberSpeed" type="checkbox" />
@@ -305,6 +306,20 @@
               >
             </label>
             <input id="forceLastSavedSpeed" type="checkbox" />
+          </div>
+          <div class="row">
+            <label for="shortcutTargetMode"
+              >Keyboard shortcut target<br />
+              <em
+                >Closest changes the video nearest the pointer (falling back to
+                the most visible active player). Change all keeps the legacy
+                behavior on pages with multiple players.</em
+              >
+            </label>
+            <select id="shortcutTargetMode">
+              <option value="closest">Closest active video</option>
+              <option value="all">All videos on the page</option>
+            </select>
           </div>
 
           <div class="defaults-divider"></div>
@@ -607,7 +622,9 @@
               >
               patterns like <code>/(.+)youtube\.com(\/*)$/gi</code>. Turn on a
               row only when you want that group to override the general defaults
-              above.
+              above. Regex and plain-path rules test both the literal URL and a
+              safely decoded path, query, and hash, so readable text can match
+              <code>%xx</code>-encoded URLs too.
             </p>
           </div>
           <div id="siteRulesContainer"></div>
@@ -626,11 +643,20 @@
               >
                 <span class="site-rule-toggle-icon" aria-hidden="true">&hellip;</span>
               </button>
-              <input
-                type="text"
-                class="site-pattern"
-                placeholder="e.g., youtube.com or /regex/gi"
-              />
+              <div class="site-rule-identity">
+                <input
+                  type="text"
+                  class="site-title"
+                  placeholder="Rule title (optional)"
+                  aria-label="Site rule title"
+                />
+                <input
+                  type="text"
+                  class="site-pattern"
+                  placeholder="e.g., youtube.com or /regex/gi"
+                  aria-label="Site rule URL pattern"
+                />
+              </div>
               <button type="button" class="remove-site-rule">Remove</button>
             </div>
             <div class="site-rule-body">
@@ -694,6 +720,26 @@
                           <input type="text" class="site-controllerMarginBottom" inputmode="numeric" placeholder="0" />
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="site-rule-override-section">
+                  <label class="site-override-lead">
+                    <span
+                      >Override shortcut target for this site<br /><em
+                        >Choose whether keyboard and popup control-bar actions
+                        affect the closest active video or every video.</em
+                      ></span
+                    >
+                    <input type="checkbox" class="override-shortcut-target" />
+                  </label>
+                  <div class="site-shortcut-target-container">
+                    <div class="site-rule-option site-rule-option-field">
+                      <label>Shortcut target:</label>
+                      <select class="site-shortcutTargetMode">
+                        <option value="closest">Closest active video</option>
+                        <option value="all">All videos on the page</option>
+                      </select>
                     </div>
                   </div>
                 </div>
@@ -767,10 +813,10 @@
                     <div class="site-rule-option site-rule-option-checkbox">
                       <label
                         >Remember playback speed:<br /><em
-                          >Stores speed per source so revisiting the same media
-                          can restore it. Separate from &ldquo;Force last saved
-                          speed,&rdquo; which fights players that reset
-                          rate.</em
+                          >Stores speeds you set with Speeder per source so
+                          revisiting the same media can restore them. Separate
+                          from &ldquo;Force last saved speed,&rdquo; which fights
+                          players that reset rate.</em
                         ></label
                       >
                       <input type="checkbox" class="site-rememberSpeed" />
@@ -783,6 +829,21 @@
                         ></label
                       >
                       <input type="checkbox" class="site-forceLastSavedSpeed" />
+                    </div>
+                    <div class="site-rule-option site-rule-option-field">
+                      <label
+                        >Preferred speed (0.0625&ndash;16):<br /><em
+                          >Overrides the Preferred speed action for matching
+                          URLs. It does not force every video to start at this
+                          speed.</em
+                        ></label
+                      >
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        class="site-preferredSpeed"
+                        placeholder="1.80"
+                      />
                     </div>
                     <div class="site-rule-option site-rule-option-checkbox">
                       <label

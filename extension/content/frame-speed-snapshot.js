@@ -8,7 +8,15 @@
     if (!v) return null;
     return {
       speed: v.playbackRate,
-      preferred: !v.paused
+      preferred: !v.paused,
+      forceLastSavedSpeed: Boolean(
+        typeof tc === "object" && tc.settings && tc.settings.forceLastSavedSpeed
+      ),
+      forceLastSavedSpeedControlledBySiteRule: Boolean(
+        typeof tc === "object" &&
+          tc.activeSiteRule &&
+          tc.activeSiteRule.forceLastSavedSpeed !== undefined
+      )
     };
   } catch (e) {
     return null;

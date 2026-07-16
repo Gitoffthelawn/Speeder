@@ -17,9 +17,9 @@ function readRepoFile(relPath) {
  * Parse HTML into a fresh JSDOM document so tests can reload scripts without
  * top-level `const` redeclaration errors (avoids document.write).
  */
-export function loadHtmlString(html) {
+export function loadHtmlString(html, options = {}) {
   const dom = new JSDOM(html, {
-    url: "https://example.org/",
+    url: options.url || "https://example.org/",
     pretendToBeVisual: true,
     runScripts: "dangerously"
   });
