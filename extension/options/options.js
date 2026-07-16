@@ -878,8 +878,8 @@ function save_options() {
     parseInt(document.getElementById("subtitleNudgeInterval").value, 10) ||
     tcDefaults.subtitleNudgeInterval;
 
-  if (settings.subtitleNudgeInterval < 10) {
-    settings.subtitleNudgeInterval = 10;
+  if (settings.subtitleNudgeInterval < 250) {
+    settings.subtitleNudgeInterval = 250;
   }
   if (settings.subtitleNudgeInterval > 1000) {
     settings.subtitleNudgeInterval = 1000;
@@ -1003,7 +1003,7 @@ function save_options() {
       rule.subtitleNudgeInterval = Math.min(
         1000,
         Math.max(
-          10,
+          250,
           Number.isFinite(nudgeIv) ? nudgeIv : settings.subtitleNudgeInterval
         )
       );

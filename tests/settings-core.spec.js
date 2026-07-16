@@ -34,6 +34,8 @@ describe("canonical settings storage", () => {
       })
     );
     expect(settings.shortcutTargetMode).toBe("closest");
+    expect(settings.subtitleNudgeInterval).toBe(250);
+    expect(settings.siteRules[0].enableSubtitleNudge).toBeUndefined();
   });
 
   it("round-trips global and site-specific shortcut targeting", () => {
@@ -228,7 +230,7 @@ describe("canonical settings storage", () => {
     expect(rule.rememberSpeed).toBe(false);
     expect(rule.forceLastSavedSpeed).toBe(true);
     expect(rule.controllerOpacity).toBe(1);
-    expect(rule.subtitleNudgeInterval).toBe(10);
+    expect(rule.subtitleNudgeInterval).toBe(250);
     expect(rule.preferredSpeed).toBe(16);
   });
 

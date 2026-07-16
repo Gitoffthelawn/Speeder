@@ -149,9 +149,7 @@
       {
         title: "YouTube videos",
         pattern: "/^https:\\/\\/(www\\.)?youtube\\.com\\/(?!shorts\\/).*/",
-        enabled: true,
-        enableSubtitleNudge: true,
-        subtitleNudgeInterval: 50
+        enabled: true
       },
       {
         title: "YouTube Shorts",
@@ -176,7 +174,7 @@
     popupControllerButtons: DEFAULT_BUTTONS.slice(),
     enableSubtitleNudge: false,
     subtitleNudgeEnabledByDefault: true,
-    subtitleNudgeInterval: 50,
+    subtitleNudgeInterval: 250,
     subtitleNudgeAmount: 0.001
   };
 
@@ -359,7 +357,7 @@
       return clampFiniteNumber(value, 0, 200, undefined);
     }
     if (key === "subtitleNudgeInterval") {
-      return clampFiniteNumber(value, 10, 1000, undefined);
+      return clampFiniteNumber(value, 250, 1000, undefined);
     }
     if (key === "preferredSpeed") {
       return clampFiniteNumber(value, 0.0625, 16, undefined);
@@ -914,7 +912,7 @@
     });
     expanded.subtitleNudgeInterval = clampFiniteNumber(
       expanded.subtitleNudgeInterval,
-      10,
+      250,
       1000,
       DEFAULT_SETTINGS.subtitleNudgeInterval
     );

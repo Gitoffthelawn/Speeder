@@ -128,7 +128,7 @@ var tc = {
       "subtitleNudgeEnabledByDefault",
       true
     ),
-    subtitleNudgeInterval: getSharedDefault("subtitleNudgeInterval", 50),
+    subtitleNudgeInterval: getSharedDefault("subtitleNudgeInterval", 250),
     subtitleNudgeAmount: getSharedDefault("subtitleNudgeAmount", 0.001),
     customButtonIcons: {}
   },
@@ -161,6 +161,7 @@ var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
 var vscObservedRoots = new WeakSet();
+var vscObservedRootList = [];
 var vscConnectedScannedRoots = new WeakSet();
 var vscInitializedDocuments = new WeakSet();
 var vscSourceObjectIds = new WeakMap();
@@ -1608,21 +1609,6 @@ function scanNodeForMedia(node, parent, added) {
     observeRoot(node.shadowRoot);
   }
 
-  // Deep-scan descendant elements for shadow roots we haven't observed yet.
-  // This catches custom elements (like archive.org's <play-av>) whose shadow
-  // roots were created before our attachShadow patch was installed.
-  if (added && typeof node.querySelectorAll === "function") {
-    try {
-      var allElements = node.querySelectorAll("*");
-      for (var j = 0; j < allElements.length; j++) {
-        if (allElements[j].shadowRoot && !vscObservedRoots.has(allElements[j].shadowRoot)) {
-          observeRoot(allElements[j].shadowRoot);
-        }
-      }
-    } catch (e) {
-      // querySelectorAll may throw on detached or unusual nodes
-    }
-  }
 }
 
 function getScanNodeForRoot(root) {
@@ -1683,6 +1669,24 @@ function rescanOpenShadowRoots(root, visited, rescanObserved) {
   });
 }
 
+function rescanObservedMediaRoots(doc) {
+  var retainedRoots = [];
+  vscObservedRootList.forEach(function(root) {
+    if (!root || root.nodeType === Node.DOCUMENT_NODE) return;
+    var connected = Boolean(root.host ? root.host.isConnected : root.isConnected);
+    if (!connected) return;
+    retainedRoots.push(root);
+    if (
+      !doc ||
+      root.ownerDocument === doc ||
+      (root.host && root.host.ownerDocument === doc)
+    ) {
+      scanRootForMedia(root);
+    }
+  });
+  vscObservedRootList = retainedRoots;
+}
+
 function observeRoot(root) {
   if (!root) return;
 
@@ -1698,6 +1702,7 @@ function observeRoot(root) {
 
   if (!vscObservedRoots.has(root)) {
     vscObservedRoots.add(root);
+    vscObservedRootList.push(root);
     setupListener(root);
     attachMutationObserver(root);
     attachMediaDetectionListeners(root);
@@ -1765,24 +1770,34 @@ function installPageShadowBridge() {
     );
   }
 
-  function startPersistentShadowFallback() {
-    if (window.vscPersistentShadowFallbackTimer) return;
-    window.vscPersistentShadowFallbackTimer = setInterval(function() {
-      requestIdle(
-        function() {
-          if (!document.body) return;
-          rescanOpenShadowRoots(document, undefined, false);
-        },
-        { timeout: 2000 }
-      );
-    }, 30000);
+  function startBoundedShadowFallback() {
+    if (window.vscBoundedShadowFallbackStarted) return;
+    window.vscBoundedShadowFallbackStarted = true;
+    window.vscBoundedShadowFallbackTimers = [3000, 10000, 30000].map(
+      function(delay) {
+        return setTimeout(function() {
+          requestIdle(
+            function() {
+              if (
+                !document.body ||
+                (delay !== 3000 && window.vscPageShadowBridgeLoaded)
+              ) {
+                return;
+              }
+              rescanOpenShadowRoots(document, undefined, false);
+            },
+            { timeout: 2000 }
+          );
+        }, delay);
+      }
+    );
   }
 
   function handleBridgeFailure() {
     window.vscPageShadowBridgeRequested = false;
     window.vscPageShadowBridgeRetries =
       (Number(window.vscPageShadowBridgeRetries) || 0) + 1;
-    startPersistentShadowFallback();
+    startBoundedShadowFallback();
     if (window.vscPageShadowBridgeRetries > 3) return;
     clearTimeout(window.vscPageShadowBridgeRetryTimer);
     window.vscPageShadowBridgeRetryTimer = setTimeout(function() {
@@ -1815,10 +1830,6 @@ function installPageShadowBridge() {
       window.vscPageShadowBridgeLoaded = true;
       window.vscPageShadowBridgeRetries = 0;
       clearTimeout(window.vscPageShadowBridgeRetryTimer);
-      if (window.vscPersistentShadowFallbackTimer) {
-        clearInterval(window.vscPersistentShadowFallbackTimer);
-        window.vscPersistentShadowFallbackTimer = null;
-      }
     });
     bridge.addEventListener("error", function() {
       bridge.remove();
@@ -1826,6 +1837,9 @@ function installPageShadowBridge() {
     });
     window.vscPageShadowBridgeRequested = true;
     parent.appendChild(bridge);
+    // The bridge reports future roots, but cannot report roots that existed
+    // before the extension loaded. Keep one bounded initial discovery pass.
+    startBoundedShadowFallback();
   } catch (error) {
     handleBridgeFailure();
     log(`Unable to install page shadow bridge: ${error.message}`, 3);
@@ -1956,7 +1970,7 @@ function hydrateRuntimeSettings(rawStorage, options) {
       : getSharedDefault("subtitleNudgeEnabledByDefault", true);
   tc.settings.subtitleNudgeInterval = Math.min(
     1000,
-    Math.max(10, Number(storage.subtitleNudgeInterval) || 50)
+    Math.max(250, Number(storage.subtitleNudgeInterval) || 250)
   );
   tc.settings.subtitleNudgeAmount =
     Number(storage.subtitleNudgeAmount) ||
@@ -2810,7 +2824,7 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
   var frameId = null;
   var geometryRetryTimer = null;
   var geometryRetryAttempts = 0;
-  var maxGeometryRetryAttempts = 40;
+  var maxGeometryRetryAttempts = 12;
   var update = function() {
     frameId = null;
     positionControllerHost(wrapper, videoController.video, mount);
@@ -4241,9 +4255,11 @@ function attachMutationObserver(root) {
       function() {
         var mutationsToProcess = pendingMutations.splice(0);
         mutationProcessingScheduled = false;
+        var controllerMountTargets = new Set();
 
         mutationsToProcess.forEach(function(mutation) {
           if (mutation.type === "childList") {
+            controllerMountTargets.add(mutation.target);
             mutation.addedNodes.forEach(function(node) {
               // Skip text nodes, comments, etc. — only elements can contain media
               if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -4254,14 +4270,6 @@ function attachMutationObserver(root) {
               scanNodeForMedia(node, node.parentNode || mutation.target, false);
             });
 
-            // Player gesture/click panes are frequently inserted after the
-            // video. Keep equal-z-index controller hosts last, and repair a
-            // host that the site removed independently of its media element.
-            tc.mediaElements.slice().forEach(function(video) {
-              if (!video || !video.vsc || !video.vsc.div) return;
-              if (video.vsc.controllerHostMount !== mutation.target) return;
-              remountControllerHost(video.vsc, mutation.target);
-            });
             return;
           }
 
@@ -4298,6 +4306,17 @@ function attachMutationObserver(root) {
             );
           }
         });
+
+        // Reconcile once per batch, not once per mutation. Large news/social
+        // pages can emit hundreds of childList records in one render pass.
+        if (controllerMountTargets.size > 0) {
+          tc.mediaElements.slice().forEach(function(video) {
+            if (!video || !video.vsc || !video.vsc.div) return;
+            var mount = video.vsc.controllerHostMount;
+            if (!controllerMountTargets.has(mount)) return;
+            remountControllerHost(video.vsc, mount);
+          });
+        }
 
         // Document selectors do not cross shadow boundaries. A detached
         // custom-element host can therefore hide connected-looking media from
@@ -4414,26 +4433,12 @@ function initializeNow(doc, forceReinit = false) {
   attachKeydownListeners(doc);
   attachMediaTargetTracking(doc);
 
-  // Bounded fallback scans catch open page-world roots if a site's CSP blocked
-  // the bridge script. The event bridge handles the normal ongoing path.
-  if (!doc.vscDelayedShadowScanDone) {
-    doc.vscDelayedShadowScanDone = true;
-    [3000, 10000, 30000].forEach(function(delay) {
-      setTimeout(function() {
-        if (!doc.body) return;
-        try {
-          rescanOpenShadowRoots(doc);
-        } catch (e) {}
-      }, delay);
-    });
-  }
-
   if (forceReinit) {
     log("Force re-initialization requested", 4);
     // A root is normally scanned only once. A user-requested rescan must also
     // revisit media that was present but source-less during the initial scan.
     scanRootForMedia(doc);
-    rescanOpenShadowRoots(doc);
+    rescanObservedMediaRoots(doc);
     refreshAllControllerGeometry();
     if (tc.settings.rememberSpeed || tc.settings.forceLastSavedSpeed) {
       tc.mediaElements.slice().forEach(applyRememberedSpeedPolicy);

@@ -154,7 +154,7 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(shadowEvents).toBe(1);
   });
 
-  it("retries a blocked page bridge and keeps a persistent shadow fallback", async () => {
+  it("retries a blocked page bridge with bounded shadow fallback scans", async () => {
     vi.useFakeTimers();
     bootInject();
     const firstBridge = document.querySelector(
@@ -165,7 +165,9 @@ describe("inject.js media/controller lifecycle regressions", () => {
     firstBridge.dispatchEvent(new Event("error"));
 
     expect(window.vscPageShadowBridgeRequested).toBe(false);
-    expect(window.vscPersistentShadowFallbackTimer).not.toBeNull();
+    expect(window.vscBoundedShadowFallbackStarted).toBe(true);
+    expect(window.vscBoundedShadowFallbackTimers).toHaveLength(3);
+    expect(window.vscPersistentShadowFallbackTimer).toBeUndefined();
     await vi.advanceTimersByTimeAsync(250);
     expect(
       document.querySelector('script[src$="content/shadow-bridge.js"]')
@@ -511,6 +513,27 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(wrapper.parentElement).toBe(mountB);
     expect(video.vsc.controllerHostMount).toBe(mountB);
     expect(mountA.querySelector(".vsc-controller")).toBeNull();
+  });
+
+  it("reconciles a burst of player mutations only once per idle batch", async () => {
+    bootInject();
+    await settleLifecycle();
+
+    const { mount, wrapper } = createControlledVideo();
+    const originalAppendChild = mount.appendChild.bind(mount);
+    let controllerReorders = 0;
+    mount.appendChild = function(node) {
+      if (node === wrapper) controllerReorders += 1;
+      return originalAppendChild(node);
+    };
+
+    for (let index = 0; index < 25; index += 1) {
+      mount.appendChild(document.createElement("span"));
+    }
+    await settleLifecycle(8);
+
+    expect(controllerReorders).toBe(1);
+    expect(mount.lastElementChild).toBe(wrapper);
   });
 
   it("suppresses a zero-size host and reveals it when the video becomes visible", async () => {

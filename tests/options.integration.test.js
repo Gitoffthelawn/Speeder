@@ -236,7 +236,7 @@ describe("options page", () => {
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
     expect(savedSettings.subtitleNudgeEnabledByDefault).toBe(false);
-    expect(savedSettings.subtitleNudgeInterval).toBe(10);
+    expect(savedSettings.subtitleNudgeInterval).toBe(250);
     expect(savedSettings.showPopupControlBar).toBe(false);
     expect(savedSettings.popupMatchHoverControls).toBe(false);
     expect(savedSettings.popupControllerButtons).toEqual(["rewind", "faster"]);
@@ -251,7 +251,7 @@ describe("options page", () => {
         controllerOpacity: 0,
         enableSubtitleNudge: true,
         subtitleNudgeEnabledByDefault: false,
-        subtitleNudgeInterval: 75,
+        subtitleNudgeInterval: 250,
         showPopupControlBar: false,
         popupControllerButtons: ["advance"]
       })
