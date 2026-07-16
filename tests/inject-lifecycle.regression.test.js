@@ -562,6 +562,56 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(mount.lastElementChild).toBe(wrapper);
   });
 
+  it("keeps expanded controls visible and disables auto-hide while hovered", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      syncData: {
+        hideWithControls: true,
+        hideWithControlsTimer: 1
+      }
+    });
+    await settleLifecycle();
+
+    const { controller, wrapper } = createControlledVideo();
+    const controllerElement = window.getControllerElement(controller);
+    controllerElement.dispatchEvent(new Event("pointerenter"));
+
+    expect(controller.controllerInteractionActive).toBe(true);
+    expect(controllerElement.classList.contains("vsc-controls-hovered")).toBe(true);
+    expect(wrapper.classList.contains("vsc-controls-hovered")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(wrapper.classList.contains("vsc-idle-hidden")).toBe(false);
+
+    controllerElement.dispatchEvent(new Event("pointerleave"));
+    expect(controller.controllerInteractionActive).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(wrapper.classList.contains("vsc-idle-hidden")).toBe(true);
+  });
+
+  it("does not let YouTube auto-hide collapse controls under the pointer", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      url: "https://www.youtube.com/watch?v=hover-lock",
+      syncData: {
+        hideWithControls: true,
+        hideWithControlsTimer: 1
+      }
+    });
+    await settleLifecycle();
+
+    const player = document.createElement("div");
+    player.className = "html5-video-player ytp-autohide";
+    const { controller, wrapper } = createControlledVideo({ mount: player });
+    const controllerElement = window.getControllerElement(controller);
+
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+    controllerElement.dispatchEvent(new Event("pointerenter"));
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(false);
+
+    controllerElement.dispatchEvent(new Event("pointerleave"));
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+  });
+
   it("suppresses a zero-size host and reveals it when the video becomes visible", async () => {
     bootInject();
     await settleLifecycle();
