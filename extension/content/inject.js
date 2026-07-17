@@ -733,6 +733,13 @@ function getRememberedSpeed(video) {
     var videoSpeed = tc.settings.speeds[sourceKey];
     if (isValidSpeed(videoSpeed)) return videoSpeed;
   }
+
+  // No per-source entry yet — fall back to the most recently used speed.
+  // This ensures e.g. YouTube Shorts carry the user's chosen speed to the
+  // next Short even when that exact source URL hasn't been visited before.
+  if (isValidSpeed(tc.settings.lastSpeed)) {
+    return tc.settings.lastSpeed;
+  }
   return null;
 }
 
