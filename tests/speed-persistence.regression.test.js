@@ -72,7 +72,7 @@ describe("durable playback-speed intent", () => {
     expect(window.tc.settings.rememberSpeed).toBe(true);
   });
 
-  it("does not seed a brand-new Short from unrelated global lastSpeed", async () => {
+  it("seeds a brand-new Short from lastSpeed when remember is active", async () => {
     bootInject(
       { lastSpeed: 1.8 },
       "https://www.youtube.com/shorts/new-source"
@@ -80,6 +80,33 @@ describe("durable playback-speed intent", () => {
     const video = await createVideo();
 
     expect(window.tc.settings.rememberSpeed).toBe(true);
+    expect(window.getRememberedSpeed(video)).toBe(1.8);
+    expect(video.playbackRate).toBe(1.8);
+  });
+
+  it("prefers per-source speed over lastSpeed fallback", async () => {
+    bootInject(
+      { lastSpeed: 2.0, rememberSpeed: true },
+      "https://example.org/watch",
+      {
+        rememberedSpeeds: {
+          "https://example.org/a.mp4": { speed: 1.4, updatedAt: 100 }
+        }
+      }
+    );
+    const video = await createVideo();
+
+    expect(window.getRememberedSpeed(video)).toBe(1.4);
+    expect(video.playbackRate).toBe(1.4);
+  });
+
+  it("does not fall back to lastSpeed when remember is off", async () => {
+    bootInject(
+      { lastSpeed: 1.8, rememberSpeed: false },
+      "https://example.org/watch"
+    );
+    const video = await createVideo();
+
     expect(window.getRememberedSpeed(video)).toBeNull();
     expect(video.playbackRate).toBe(1);
   });
