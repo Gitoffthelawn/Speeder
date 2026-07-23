@@ -309,6 +309,44 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(second.video.playbackRate).toBe(1.2);
   });
 
+  it("drops a stale hover-preview shortcut target after SPA navigation", async () => {
+    bootInject({
+      url: "https://www.youtube.com/",
+      path: "/"
+    });
+    await settleLifecycle();
+
+    const preview = createControlledVideo({
+      src: "blob:https://www.youtube.com/hover-preview",
+      mountRect: makeRect(0, 0, 320, 180)
+    });
+    document.dispatchEvent(
+      new MouseEvent("mousemove", { bubbles: true, clientX: 100, clientY: 90 })
+    );
+    expect(window.tc.lastPointerPosition).toEqual(
+      expect.objectContaining({ document, x: 100, y: 90 })
+    );
+
+    window.history.pushState({}, "", "/watch?v=next-video");
+
+    const main = createControlledVideo({
+      src: "blob:https://www.youtube.com/main-player",
+      mountRect: makeRect(0, 0, 1280, 720)
+    });
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        code: "KeyD",
+        key: "d"
+      })
+    );
+
+    expect(window.tc.lastPointerPosition).toBeNull();
+    expect(preview.video.playbackRate).toBe(1);
+    expect(main.video.playbackRate).toBe(1.1);
+  });
+
   it("skips ambient loops by default and includes them when explicitly enabled", async () => {
     bootInject();
     await settleLifecycle();

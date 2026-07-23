@@ -4557,7 +4557,16 @@ function attachMediaDetectionListeners(root) {
 }
 
 function scheduleNavigationRescan() {
-  window.vscLastObservedHref = location.href;
+  var nextHref = location.href;
+  if (window.vscLastObservedHref !== nextHref) {
+    // Pointer and controller interaction state belongs to the previous route.
+    // YouTube keeps hover-preview and Shorts players connected across SPA
+    // navigations, so retaining either target can send shortcuts to an
+    // off-screen/stale player even though the new watch controller works.
+    tc.lastPointerPosition = null;
+    tc.lastInteractedMedia = null;
+  }
+  window.vscLastObservedHref = nextHref;
   clearTimeout(window.vscNavigationRescanTimer);
   window.vscNavigationRescanTimer = setTimeout(function() {
     initializeWhenReady(document, true);
