@@ -159,8 +159,8 @@ var tc = {
   lastInteractedMedia: null
 };
 
-var MIN_SPEED = Number(keyBindingUtils.MIN_SPEED) || 0.01;
-var MAX_SPEED = Number(keyBindingUtils.MAX_SPEED) || 100;
+var MIN_SPEED = Number(keyBindingUtils.MIN_SPEED) || 0.1;
+var MAX_SPEED = Number(keyBindingUtils.MAX_SPEED) || 16;
 var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;

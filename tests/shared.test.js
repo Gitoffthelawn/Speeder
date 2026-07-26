@@ -158,10 +158,13 @@ describe("shared helpers", () => {
       "NumpadAdd"
     );
     expect(keyBindingUtils.getLegacyKeyCode({ key: 65 })).toBe(65);
-    expect(keyBindingUtils.getActionValueError("fast", 0.01)).toBeNull();
-    expect(keyBindingUtils.getActionValueError("fast", 100)).toBeNull();
-    expect(keyBindingUtils.getActionValueError("fast", 0.009)).toContain(
-      "between 0.01 and 100"
+    expect(keyBindingUtils.getActionValueError("fast", 0.1)).toBeNull();
+    expect(keyBindingUtils.getActionValueError("fast", 16)).toBeNull();
+    expect(keyBindingUtils.getActionValueError("fast", 0.099)).toContain(
+      "between 0.1 and 16"
+    );
+    expect(keyBindingUtils.getActionValueError("fast", 16.001)).toContain(
+      "between 0.1 and 16"
     );
   });
 
