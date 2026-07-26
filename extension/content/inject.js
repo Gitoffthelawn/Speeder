@@ -3757,7 +3757,7 @@ function defineVideoController() {
         // Only hide if the video is not paused
         // (Many players keep controls visible while paused)
         // However, the user said "Reveal on every mouse and keyboard input"
-        // and "auto-hidden after timespan". 
+        // and "auto-hidden after timespan".
         // We'll follow the timer strictly.
         wrapper.classList.add("vsc-idle-hidden");
         log("Generic hide: controller hidden due to inactivity", 5);
@@ -4314,7 +4314,11 @@ function clearPendingInitialization(doc) {
 
 function tryInitializeDocument(doc, forceReinit) {
   if (!doc) return false;
-  if ((!forceReinit && vscInitializedDocuments.has(doc)) || !doc.body) {
+  if (
+    !tc.runtimeSettingsHydrated ||
+    (!forceReinit && vscInitializedDocuments.has(doc)) ||
+    !doc.body
+  ) {
     return false;
   }
 
