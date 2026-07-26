@@ -67,6 +67,22 @@ describe("options.js", () => {
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
+  it("automatically saves changed settings", async () => {
+    const chrome = bootOptions({ syncData: { rememberSpeed: false } });
+    await flushAsyncWork(3);
+    vi.useFakeTimers();
+    chrome.storage.sync.set.mockClear();
+
+    const rememberSpeed = document.getElementById("rememberSpeed");
+    rememberSpeed.checked = true;
+    rememberSpeed.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(true);
+  });
+
   it("does not partially save options when a required site shortcut is invalid", async () => {
     const chrome = bootOptions({ syncData: { rememberSpeed: false } });
     await flushAsyncWork(3);

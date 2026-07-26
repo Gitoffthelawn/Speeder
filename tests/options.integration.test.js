@@ -106,6 +106,48 @@ describe("options page", () => {
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
+  it("adds and restores duplicate actions with Shift bindings", async () => {
+    const chrome = await setupOptions();
+    const selector = document.getElementById("addShortcutSelector");
+    expect(selector.querySelector('option[value="rewind"]')).not.toBeNull();
+
+    selector.value = "rewind";
+    selector.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const duplicate = document.querySelector(
+      '.shortcut-row.customs[data-action="rewind"]'
+    );
+    duplicate.querySelector(".customKey").dispatchEvent(
+      new window.KeyboardEvent("keydown", {
+        key: "Z",
+        code: "KeyZ",
+        shiftKey: true,
+        bubbles: true
+      })
+    );
+    duplicate.querySelector(".customValue").value = "3";
+
+    globalThis.save_options();
+    expect(
+      chrome.storage.sync.__state.keyBindings.filter(
+        (binding) => binding.action === "rewind"
+      )
+    ).toEqual([
+      expect.objectContaining({ value: 10, shiftKey: false }),
+      expect.objectContaining({ value: 3, shiftKey: true })
+    ]);
+
+    globalThis.restore_options();
+    await flushAsyncWork();
+    expect(
+      document.querySelectorAll('.shortcut-row[data-action="rewind"]')
+    ).toHaveLength(2);
+    expect(
+      document.querySelector(
+        '.shortcut-row.customs[data-action="rewind"] .customKey'
+      ).value
+    ).toBe("Shift+Z");
+  });
+
   it("shows a more-menu trigger for collapsed site rules and a collapse trigger when open", async () => {
     await setupOptions({ sync: { siteRules: [] } });
 

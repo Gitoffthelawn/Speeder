@@ -320,6 +320,7 @@ describe("inject.js media/controller lifecycle regressions", () => {
       src: "blob:https://www.youtube.com/hover-preview",
       mountRect: makeRect(0, 0, 320, 180)
     });
+    preview.mount.id = "inline-preview-player";
     document.dispatchEvent(
       new MouseEvent("mousemove", { bubbles: true, clientX: 100, clientY: 90 })
     );
@@ -333,6 +334,10 @@ describe("inject.js media/controller lifecycle regressions", () => {
       src: "blob:https://www.youtube.com/main-player",
       mountRect: makeRect(0, 0, 1280, 720)
     });
+    main.mount.id = "movie_player";
+    document.dispatchEvent(
+      new MouseEvent("mousemove", { bubbles: true, clientX: 100, clientY: 90 })
+    );
     document.dispatchEvent(
       new KeyboardEvent("keydown", {
         bubbles: true,
@@ -342,9 +347,51 @@ describe("inject.js media/controller lifecycle regressions", () => {
       })
     );
 
-    expect(window.tc.lastPointerPosition).toBeNull();
+    expect(window.tc.lastPointerPosition).not.toBeNull();
     expect(preview.video.playbackRate).toBe(1);
     expect(main.video.playbackRate).toBe(1.1);
+  });
+
+  it("captures SPA shortcuts before later page handlers and distinguishes Shift", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      syncGetDelayMs: 25,
+      syncData: {
+        keyBindings: [
+          { action: "advance", code: "KeyX", value: 10 },
+          { action: "advance", code: "KeyX", shiftKey: true, value: 3 }
+        ]
+      }
+    });
+    expect(window.vscKeydownListenerAttached).toBe(true);
+
+    window.addEventListener(
+      "keydown",
+      (event) => event.stopImmediatePropagation(),
+      true
+    );
+    await vi.advanceTimersByTimeAsync(25);
+    await settleLifecycle();
+
+    const { video } = createControlledVideo();
+    video.currentTime = 50;
+    video.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "KeyX",
+        key: "x"
+      })
+    );
+    video.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "KeyX",
+        key: "X",
+        shiftKey: true
+      })
+    );
+
+    expect(video.currentTime).toBe(63);
   });
 
   it("skips ambient loops by default and includes them when explicitly enabled", async () => {

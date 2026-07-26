@@ -159,8 +159,8 @@ var tc = {
   lastInteractedMedia: null
 };
 
-var MIN_SPEED = 0.0625;
-var MAX_SPEED = 16;
+var MIN_SPEED = Number(keyBindingUtils.MIN_SPEED) || 0.01;
+var MAX_SPEED = Number(keyBindingUtils.MAX_SPEED) || 100;
 var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
@@ -652,6 +652,7 @@ function normalizeStoredBinding(binding, fallbackCode) {
   var normalized = {
     action: binding.action,
     code: normalizedCode,
+    shiftKey: binding.shiftKey === true,
     disabled: false,
     value: keyBindingUtils.sanitizeActionValue(
       binding.action,
@@ -1360,7 +1361,8 @@ function matchesKeyBinding(binding, event) {
     binding.disabled !== true &&
     typeof binding.code === "string" &&
     binding.code.length > 0 &&
-    binding.code === event.code
+    binding.code === event.code &&
+    (binding.shiftKey === true) === event.shiftKey
   );
 }
 
@@ -2564,6 +2566,9 @@ function loadInitialRuntimeSettings(attempt) {
   });
 }
 
+// Install before async settings hydration so SPA-owned window capture handlers
+// cannot hide later key events from Speeder.
+attachKeydownListeners(document);
 loadInitialRuntimeSettings(0);
 
 function getKeyBindings(action, what = "value") {
@@ -4208,7 +4213,7 @@ function setupListener(root) {
     if (config.skipResetDisarm !== true) {
       video.vsc.resetToggleArmed = false;
     }
-    var speed = video.playbackRate; // Preserve full precision (e.g. 0.0625)
+    var speed = video.playbackRate; // Preserve full precision (e.g. 0.01)
     video.vsc.speedIndicator.textContent = speed.toFixed(2);
     video.vsc.targetSpeed = speed;
     video.vsc.targetSpeedSourceKey = getVideoSourceKey(video);
@@ -4240,7 +4245,7 @@ function setupListener(root) {
       if (!video || typeof video.playbackRate === "undefined" || !video.vsc)
         return;
       if (shouldIgnoreSuppressedRateChange(video)) return;
-      var currentSpeed = video.playbackRate; // Preserve full precision (e.g. 0.0625)
+      var currentSpeed = video.playbackRate; // Preserve full precision (e.g. 0.01)
       var pendingRateChange = takePendingRateChange(video, currentSpeed);
       if (tc.settings.forceLastSavedSpeed) {
         if (pendingRateChange) {
@@ -4354,12 +4359,13 @@ function inIframe() {
 
 function attachKeydownListeners(doc) {
   // Content scripts already run in every frame. Keeping each listener scoped
-  // to its own document avoids duplicate shortcuts and stale iframe ownership.
+  // to its own frame avoids duplicate shortcuts and stale iframe ownership.
   var docs = [doc];
 
   docs.forEach(function(keyDoc) {
-    if (keyDoc.vscKeydownListenerAttached) return;
-    keyDoc.addEventListener(
+    var keyTarget = keyDoc.defaultView || keyDoc;
+    if (keyTarget.vscKeydownListenerAttached) return;
+    keyTarget.addEventListener(
       "keydown",
       function(event) {
         if (
@@ -4411,7 +4417,7 @@ function attachKeydownListeners(doc) {
       },
       true
     );
-    keyDoc.vscKeydownListenerAttached = true;
+    keyTarget.vscKeydownListenerAttached = true;
   });
 }
 
@@ -4815,6 +4821,16 @@ function resolveActionMediaTargets(event, specificVideo) {
   }
 
   if (tc.settings.shortcutTargetMode === "all") return candidates;
+
+  if (
+    isOnYouTube() &&
+    /^\/(watch|live)(\/|$)/.test(location.pathname)
+  ) {
+    var youtubeMain = candidates.find(function(video) {
+      return video.closest && video.closest("#movie_player");
+    });
+    if (youtubeMain) return [youtubeMain];
+  }
 
   var pointer =
     tc.lastPointerPosition && tc.lastPointerPosition.document === docContext

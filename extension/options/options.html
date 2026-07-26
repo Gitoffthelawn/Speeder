@@ -250,7 +250,7 @@
             </div>
           </div>
 
-          <select id="addShortcutSelector">
+          <select id="addShortcutSelector" aria-label="Add another shortcut">
             <option value="">Add shortcut&hellip;</option>
           </select>
         </section>
@@ -843,7 +843,7 @@
                     </div>
                     <div class="site-rule-option site-rule-option-field">
                       <label
-                        >Preferred speed (0.0625&ndash;16):<br /><em
+                        >Preferred speed (0.01&ndash;100):<br /><em
                           >Overrides the Preferred speed action for matching
                           URLs. It does not force every video to start at this
                           speed.</em
@@ -1022,10 +1022,10 @@
         <section class="settings-card action-card">
           <div class="section-heading">
             <h3>Actions</h3>
-            <p class="section-intro">Save, restore, export, or import settings.</p>
+            <p class="section-intro">Changes save automatically.</p>
           </div>
           <div class="action-row">
-            <button id="save">Save Changes</button>
+            <button id="save">Save Now</button>
             <button id="restore">Restore Defaults</button>
             <button id="exportSettings">Export Settings</button>
             <button id="importSettings">Import Settings</button>

@@ -158,6 +158,11 @@ describe("shared helpers", () => {
       "NumpadAdd"
     );
     expect(keyBindingUtils.getLegacyKeyCode({ key: 65 })).toBe(65);
+    expect(keyBindingUtils.getActionValueError("fast", 0.01)).toBeNull();
+    expect(keyBindingUtils.getActionValueError("fast", 100)).toBeNull();
+    expect(keyBindingUtils.getActionValueError("fast", 0.009)).toContain(
+      "between 0.01 and 100"
+    );
   });
 
   it("builds and parses import/export payloads", () => {

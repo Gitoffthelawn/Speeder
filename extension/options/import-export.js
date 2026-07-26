@@ -54,11 +54,7 @@ function normalizedSettingsForExport(rawStorage) {
   // lastSpeed is useful user data, but it is intentionally outside the
   // managed options diff because content scripts update it at runtime.
   if (Object.prototype.hasOwnProperty.call(raw, "lastSpeed")) {
-    if (
-      Number.isFinite(expanded.lastSpeed) &&
-      expanded.lastSpeed >= 0.0625 &&
-      expanded.lastSpeed <= 16
-    ) {
+    if (Number.isFinite(expanded.lastSpeed)) {
       normalized.lastSpeed = expanded.lastSpeed;
     }
   }
@@ -117,11 +113,7 @@ function persistImportedSyncSettings(currentRaw, importedRaw, callback) {
     importedRaw &&
     Object.prototype.hasOwnProperty.call(importedRaw, "lastSpeed")
   ) {
-    if (
-      Number.isFinite(expanded.lastSpeed) &&
-      expanded.lastSpeed >= 0.0625 &&
-      expanded.lastSpeed <= 16
-    ) {
+    if (Number.isFinite(expanded.lastSpeed)) {
       mutation.set.lastSpeed = expanded.lastSpeed;
     }
   }
