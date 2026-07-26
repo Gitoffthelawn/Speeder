@@ -394,6 +394,44 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(video.currentTime).toBe(63);
   });
 
+  it("finishes a forced SPA initialization after settings hydration", async () => {
+    vi.useFakeTimers();
+    bootInject({
+      url: "https://www.youtube.com/",
+      syncGetDelayMs: 1000
+    });
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    const rect = makeRect(0, 0, 1280, 720);
+    mount.id = "movie_player";
+    video.src = "blob:https://www.youtube.com/main-player";
+    setRect(mount, rect);
+    setBoxMetrics(mount, rect.width, rect.height);
+    setRect(video, rect);
+    mount.appendChild(video);
+    document.body.appendChild(mount);
+
+    document.dispatchEvent(new Event("speeder-location-changed"));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(window.tc.runtimeSettingsHydrated).toBe(false);
+    expect(video.vsc).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(700);
+    await settleLifecycle();
+
+    expect(window.tc.runtimeSettingsHydrated).toBe(true);
+    expect(video.vsc).toBeTruthy();
+    video.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "KeyD",
+        key: "d"
+      })
+    );
+    expect(video.playbackRate).toBe(1.1);
+  });
+
   it("skips ambient loops by default and includes them when explicitly enabled", async () => {
     bootInject();
     await settleLifecycle();
