@@ -164,9 +164,32 @@ function createDefaultBinding(action, code, value) {
 
 var tcDefaults = vscGetSettingsDefaults();
 var optionsSyncSettingsLoaded = false;
+var autoSaveTimer = null;
+
+function scheduleAutoSave() {
+  if (!optionsSyncSettingsLoaded) return;
+  clearTimeout(autoSaveTimer);
+  var sourceSaveButton = document.getElementById("save");
+  var scheduledTimer = setTimeout(function () {
+    if (
+      autoSaveTimer !== scheduledTimer ||
+      !sourceSaveButton ||
+      !sourceSaveButton.isConnected
+    ) {
+      return;
+    }
+    autoSaveTimer = null;
+    save_options();
+  }, 300);
+  autoSaveTimer = scheduledTimer;
+}
 
 function setOptionsSyncSettingsLoaded(loaded) {
   optionsSyncSettingsLoaded = loaded === true;
+  if (!optionsSyncSettingsLoaded) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
   var saveButton = document.getElementById("save");
   if (saveButton) {
     saveButton.disabled = !optionsSyncSettingsLoaded;
@@ -302,33 +325,15 @@ function refreshAddShortcutSelector() {
     selector.remove(1);
   }
 
-  // Find all currently used actions
-  const usedActions = new Set();
-  document.querySelectorAll(".shortcut-row").forEach((row) => {
-    const action = row.dataset.action;
-    if (action) {
-      usedActions.add(action);
-    }
-  });
-
-  // Add all unused actions
   Object.keys(actionLabels).forEach((action) => {
-    if (!usedActions.has(action)) {
-      const option = document.createElement("option");
-      option.value = action;
-      option.text = actionLabels[action];
-      selector.appendChild(option);
-    }
+    const option = document.createElement("option");
+    option.value = action;
+    option.text = actionLabels[action];
+    selector.appendChild(option);
   });
 
-  // If no available actions, hide or disable the selector
-  if (selector.options.length === 1) {
-    selector.disabled = true;
-    selector.options[0].text = "All shortcuts added";
-  } else {
-    selector.disabled = false;
-    selector.options[0].text = "Add shortcut\u2026";
-  }
+  selector.disabled = false;
+  selector.options[0].text = "Add shortcut\u2026";
 }
 
 function refreshSiteRuleAddShortcutSelector(ruleEl) {
@@ -340,32 +345,19 @@ function refreshSiteRuleAddShortcutSelector(ruleEl) {
     selector.remove(1);
   }
 
-  var usedActions = new Set();
-  ruleEl.querySelectorAll(".site-shortcuts-rows .shortcut-row.customs").forEach(function (row) {
-    var action = row.dataset.action;
-    if (action) usedActions.add(action);
-  });
-
   Object.keys(actionLabels).forEach(function (action) {
-    if (!usedActions.has(action)) {
-      var option = document.createElement("option");
-      option.value = action;
-      option.textContent = actionLabels[action];
-      selector.appendChild(option);
-    }
+    var option = document.createElement("option");
+    option.value = action;
+    option.textContent = actionLabels[action];
+    selector.appendChild(option);
   });
 
   var overrideShortcutsOn =
     ruleEl.querySelector(".override-shortcuts") &&
     ruleEl.querySelector(".override-shortcuts").checked;
 
-  if (selector.options.length === 1) {
-    selector.disabled = true;
-    selector.options[0].text = "All shortcuts added";
-  } else {
-    selector.disabled = !overrideShortcutsOn;
-    selector.options[0].text = "Add shortcut\u2026";
-  }
+  selector.disabled = !overrideShortcutsOn;
+  selector.options[0].text = "Add shortcut\u2026";
 }
 
 function getGlobalBindingSnapshotForSiteShortcut(action) {
@@ -424,7 +416,10 @@ function readOptionalPreferredSpeedInput(input) {
   if (!rawValue) return undefined;
   var parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) return undefined;
-  return Math.min(16, Math.max(0.0625, parsed));
+  return Math.min(
+    keyBindingUtils.MAX_SPEED,
+    Math.max(keyBindingUtils.MIN_SPEED, parsed)
+  );
 }
 
 function updateSiteRuleToggleIcon(toggleButton, action) {
@@ -560,6 +555,7 @@ function normalizeStoredBinding(binding, fallbackCode) {
 
   var normalized = {
     code: normalizedCode,
+    shiftKey: binding.shiftKey === true,
     disabled: false
   };
 
@@ -578,7 +574,7 @@ function formatBindingCode(code) {
 function getBindingLabel(binding) {
   if (!binding) return "";
   if (binding.disabled) return "";
-  return formatBindingCode(binding.code);
+  return (binding.shiftKey ? "Shift+" : "") + formatBindingCode(binding.code);
 }
 
 function setShortcutInputBinding(input, binding) {
@@ -591,6 +587,7 @@ function captureBindingFromEvent(event) {
   if (typeof event.code !== "string" || event.code.length === 0) return null;
   return {
     code: event.code,
+    shiftKey: event.shiftKey === true,
     disabled: false
   };
 }
@@ -600,6 +597,7 @@ function recordKeyPress(event) {
 
   if (event.key === "Backspace") {
     setShortcutInputBinding(event.target, null);
+    scheduleAutoSave();
     event.preventDefault();
     event.stopPropagation();
     return;
@@ -607,6 +605,7 @@ function recordKeyPress(event) {
 
   if (event.key === "Escape") {
     setShortcutInputBinding(event.target, createDisabledBinding());
+    scheduleAutoSave();
     event.preventDefault();
     event.stopPropagation();
     return;
@@ -616,6 +615,7 @@ function recordKeyPress(event) {
   if (!binding) return;
 
   setShortcutInputBinding(event.target, binding);
+  scheduleAutoSave();
   event.preventDefault();
   event.stopPropagation();
 }
@@ -770,6 +770,7 @@ function createKeyBindings(item) {
   keyBindings.push({
     action: action,
     code: binding.code,
+    shiftKey: binding.shiftKey === true,
     disabled: binding.disabled === true,
     value: bindingValue,
     force: false,
@@ -807,6 +808,8 @@ function validate() {
 }
 
 function save_options() {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = null;
   var status = document.getElementById("status");
   if (!optionsSyncSettingsLoaded) {
     status.textContent =
@@ -1092,6 +1095,7 @@ function save_options() {
         shortcuts.push({
           action: action,
           code: binding.code,
+          shiftKey: binding.shiftKey === true,
           disabled: binding.disabled === true,
           value: shortcutValue,
           force: forceCheckbox ? forceCheckbox.checked : false
@@ -1551,6 +1555,7 @@ function initControlBarEditor() {
     var zone = e.target.closest(".cb-dropzone");
     if (zone) {
       e.preventDefault();
+      scheduleAutoSave();
     }
 
     clearControlBarDropTargets(null);
@@ -1825,13 +1830,16 @@ function restore_options(callback) {
 
     document.querySelectorAll(".customs:not([id])").forEach((row) => row.remove());
 
+    var usedDefaultShortcutRows = new Set();
     storage.keyBindings.forEach((item) => {
       var row = document.getElementById(item.action);
       var normalizedBinding = normalizeStoredBinding(item);
 
-      if (!row) {
+      if (!row || usedDefaultShortcutRows.has(item.action)) {
         add_shortcut(item.action, item.value);
         row = document.querySelector(".shortcut-row.customs:last-of-type");
+      } else {
+        usedDefaultShortcutRows.add(item.action);
       }
 
       if (!row) return;
@@ -2030,11 +2038,13 @@ document.addEventListener("DOMContentLoaded", function () {
       if (siteRuleForShortcut) {
         refreshSiteRuleAddShortcutSelector(siteRuleForShortcut);
       }
+      scheduleAutoSave();
       return;
     }
     var removeSiteRuleButton = targetEl.closest(".remove-site-rule");
     if (removeSiteRuleButton) {
       removeSiteRuleButton.closest(".site-rule").remove();
+      scheduleAutoSave();
       return;
     }
     var toggleButton = targetEl.closest(".toggle-site-rule");
@@ -2102,6 +2112,14 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         return;
       }
+    }
+  });
+  document.addEventListener("change", (event) => {
+    if (
+      event.target.id !== "addShortcutSelector" &&
+      !event.target.closest("#lucideIconSettings")
+    ) {
+      scheduleAutoSave();
     }
   });
 });

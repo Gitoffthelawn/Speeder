@@ -4,6 +4,8 @@
   var LEGACY_SITE_RULES_DIFF_FORMAT = "defaults-diff-v1";
   var SITE_RULES_DIFF_FORMAT = "defaults-diff-v2";
   var REMOVED_DEFAULT_RULE_KEYS_META = "removedDefaultRuleKeys";
+  var MIN_SPEED = 0.01;
+  var MAX_SPEED = 100;
   var DEFAULT_BUTTONS = ["rewind", "slower", "faster", "advance", "display"];
   var LEGACY_SYNC_KEYS = [
     "resetSpeed",
@@ -363,7 +365,7 @@
       return clampFiniteNumber(value, 250, 1000, undefined);
     }
     if (key === "preferredSpeed") {
-      return clampFiniteNumber(value, 0.0625, 16, undefined);
+      return clampFiniteNumber(value, MIN_SPEED, MAX_SPEED, undefined);
     }
     if (key === "shortcuts" && Array.isArray(value)) {
       return sanitizeStoredBindingValues(value).map(function(shortcut) {
@@ -749,9 +751,9 @@
       var value = Number(normalized.value);
       var invalid = !Number.isFinite(value);
       if (action === "slower" || action === "faster") {
-        invalid = invalid || value <= 0 || value > 16;
+        invalid = invalid || value <= 0 || value > MAX_SPEED;
       } else if (action === "fast") {
-        invalid = invalid || value < 0.0625 || value > 16;
+        invalid = invalid || value < MIN_SPEED || value > MAX_SPEED;
       } else if (action === "rewind" || action === "advance") {
         invalid = invalid || value < 0;
       } else if (action === "louder" || action === "softer") {
@@ -885,8 +887,8 @@
 
     expanded.lastSpeed = clampFiniteNumber(
       expanded.lastSpeed,
-      0.0625,
-      16,
+      MIN_SPEED,
+      MAX_SPEED,
       DEFAULT_SETTINGS.lastSpeed
     );
     expanded.hideWithControlsTimer = clampFiniteNumber(
