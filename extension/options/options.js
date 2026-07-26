@@ -165,6 +165,7 @@ function createDefaultBinding(action, code, value) {
 var tcDefaults = vscGetSettingsDefaults();
 var optionsSyncSettingsLoaded = false;
 var autoSaveTimer = null;
+var saveStatusTimer = null;
 
 function scheduleAutoSave() {
   if (!optionsSyncSettingsLoaded) return;
@@ -179,7 +180,7 @@ function scheduleAutoSave() {
       return;
     }
     autoSaveTimer = null;
-    save_options();
+    save_options(true);
   }, 300);
   autoSaveTimer = scheduledTimer;
 }
@@ -807,8 +808,9 @@ function validate() {
   return valid;
 }
 
-function save_options() {
+function save_options(isAutoSave) {
   clearTimeout(autoSaveTimer);
+  clearTimeout(saveStatusTimer);
   autoSaveTimer = null;
   var status = document.getElementById("status");
   if (!optionsSyncSettingsLoaded) {
@@ -1121,8 +1123,8 @@ function save_options() {
       status.textContent = "Error: Unable to save options - " + error.message;
       return;
     }
-    status.textContent = "Options saved";
-    setTimeout(function () {
+    status.textContent = isAutoSave === true ? "Auto-saved" : "Options saved";
+    saveStatusTimer = setTimeout(function () {
       status.textContent = "";
     }, 1000);
   });

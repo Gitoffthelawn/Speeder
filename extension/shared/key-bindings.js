@@ -8,8 +8,8 @@
   root.SpeederShared = root.SpeederShared || {};
   root.SpeederShared.keyBindings = exports;
 })(typeof globalThis !== "undefined" ? globalThis : this, function() {
-  var MIN_SPEED = 0.01;
-  var MAX_SPEED = 100;
+  var MIN_SPEED = 0.1;
+  var MAX_SPEED = 16;
 
   function normalizeBindingKey(key) {
     if (typeof key !== "string" || key.length === 0) return null;

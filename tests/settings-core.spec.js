@@ -257,7 +257,7 @@ describe("canonical settings storage", () => {
     expect(rule.forceLastSavedSpeed).toBe(true);
     expect(rule.controllerOpacity).toBe(1);
     expect(rule.subtitleNudgeInterval).toBe(250);
-    expect(rule.preferredSpeed).toBe(100);
+    expect(rule.preferredSpeed).toBe(16);
   });
 
   it("falls back for null and blank numeric settings instead of coercing zero", () => {

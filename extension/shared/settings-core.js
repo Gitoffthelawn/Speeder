@@ -4,8 +4,8 @@
   var LEGACY_SITE_RULES_DIFF_FORMAT = "defaults-diff-v1";
   var SITE_RULES_DIFF_FORMAT = "defaults-diff-v2";
   var REMOVED_DEFAULT_RULE_KEYS_META = "removedDefaultRuleKeys";
-  var MIN_SPEED = 0.01;
-  var MAX_SPEED = 100;
+  var MIN_SPEED = 0.1;
+  var MAX_SPEED = 16;
   var DEFAULT_BUTTONS = ["rewind", "slower", "faster", "advance", "display"];
   var LEGACY_SYNC_KEYS = [
     "resetSpeed",

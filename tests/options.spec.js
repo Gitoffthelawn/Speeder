@@ -81,6 +81,7 @@ describe("options.js", () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(chrome.storage.sync._dump().rememberSpeed).toBe(true);
+    expect(document.getElementById("status").textContent).toBe("Auto-saved");
   });
 
   it("does not partially save options when a required site shortcut is invalid", async () => {

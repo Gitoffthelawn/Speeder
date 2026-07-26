@@ -322,7 +322,7 @@ label em {
 
 .shortcut-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 120px;
+  grid-template-columns: minmax(0, 1fr) 120px 120px 38px;
   gap: 12px;
   align-items: center;
   padding: 10px 0;
@@ -332,10 +332,6 @@ label em {
 .shortcuts-grid .shortcut-row:first-child {
   padding-top: 0;
   border-top: 0;
-}
-
-.shortcut-row.customs {
-  grid-template-columns: minmax(0, 1fr) 120px 120px 38px;
 }
 
 .shortcut-label {
@@ -1059,6 +1055,20 @@ button.lucide-result-tile.lucide-picked {
   margin-top: 10px;
   color: var(--muted);
   font-weight: 500;
+}
+
+#status:not(:empty) {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.16);
 }
 
 #status:empty {
