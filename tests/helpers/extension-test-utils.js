@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
-const { vi } = require("vitest");
+const vi = globalThis.vi;
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
@@ -44,9 +44,10 @@ function applyJSDOMWindow(win) {
   win.close = vi.fn();
 }
 
-function loadHtmlString(html) {
+function loadHtmlString(html, options) {
+  const config = options || {};
   const dom = new JSDOM(html, {
-    url: "https://example.org/",
+    url: config.url || "https://example.org/",
     pretendToBeVisual: true,
     runScripts: "dangerously"
   });
@@ -118,7 +119,11 @@ async function flushAsyncWork(turns) {
   const count = turns || 2;
   for (let i = 0; i < count; i += 1) {
     await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (vi && typeof vi.isFakeTimers === "function" && vi.isFakeTimers()) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 }
 

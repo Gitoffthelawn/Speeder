@@ -6,14 +6,28 @@
   width: 100% !important;
   height: 100% !important;
   pointer-events: none !important;
-  z-index: 2147483646 !important;
+  /* Keep the interactive controller above player-owned click/pause panes. */
+  z-index: 2147483647 !important;
   white-space: normal;
   overflow: visible !important;
 }
 
-/* Use minimal z-index for non-YouTube sites to avoid overlapping modals */
-.vsc-controller.vsc-non-youtube {
-  z-index: 1 !important;
+/* Native media controls can fullscreen the replaced <video> element without
+   calling the page's requestFullscreen method. A manual popover keeps the
+   controller in the browser top layer without nesting it inside <video>. */
+.vsc-controller.vsc-fullscreen-popover {
+  position: fixed !important;
+  inset: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+}
+
+.vsc-controller.vsc-fullscreen-popover::backdrop {
+  pointer-events: none !important;
+  background: transparent !important;
 }
 
 .vsc-nosource {

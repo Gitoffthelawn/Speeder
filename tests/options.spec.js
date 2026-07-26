@@ -1,4 +1,3 @@
-const { afterEach, beforeEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
@@ -11,7 +10,7 @@ const {
 function bootOptions(options) {
   const config = options || {};
 
-  loadHtmlFile("options.html");
+  loadHtmlFile("extension/options/options.html");
   installCommonWindowMocks();
 
   const chrome = createChromeMock({
@@ -31,9 +30,13 @@ function bootOptions(options) {
   );
   window.fetch = global.fetch;
 
-  evaluateScript("ui-icons.js");
-  evaluateScript("lucide-client.js");
-  evaluateScript("options.js");
+  evaluateScript("extension/shared/controller-utils.js");
+  evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/settings-core.js");
+  evaluateScript("extension/shared/popup-controls.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/options/lucide-client.js");
+  evaluateScript("extension/options/options.js");
   fireDOMContentLoaded();
 
   return chrome;
@@ -45,6 +48,234 @@ describe("options.js", () => {
     vi.unstubAllGlobals();
     delete global.chrome;
     delete global.fetch;
+  });
+
+  it("rejects invalid zero-valued speed steps instead of saving broken shortcuts", async () => {
+    const chrome = bootOptions();
+    await flushAsyncWork(3);
+    const fasterRow = Array.from(
+      document.querySelectorAll("#customs .shortcut-row")
+    ).find((row) => row.dataset.action === "faster");
+    fasterRow.querySelector(".customValue").value = "0";
+    chrome.storage.sync.set.mockClear();
+
+    window.save_options();
+
+    expect(document.getElementById("status").textContent).toContain(
+      "must be greater than 0"
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it("automatically saves changed settings", async () => {
+    const chrome = bootOptions({ syncData: { rememberSpeed: false } });
+    await flushAsyncWork(3);
+    vi.useFakeTimers();
+    chrome.storage.sync.set.mockClear();
+
+    const rememberSpeed = document.getElementById("rememberSpeed");
+    rememberSpeed.checked = true;
+    rememberSpeed.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(true);
+    expect(document.getElementById("status").textContent).toBe("Auto-saved");
+  });
+
+  it("does not partially save options when a required site shortcut is invalid", async () => {
+    const chrome = bootOptions({ syncData: { rememberSpeed: false } });
+    await flushAsyncWork(3);
+    window.createSiteRule({
+      pattern: "example.org",
+      shortcuts: [
+        {
+          action: "faster",
+          code: "KeyD",
+          value: 0.1,
+          disabled: false
+        }
+      ]
+    });
+    const rule = document.getElementById("siteRulesContainer").lastElementChild;
+    rule.querySelector('.shortcut-row[data-action="faster"] .customKey').vscBinding =
+      null;
+    document.getElementById("rememberSpeed").checked = true;
+    chrome.storage.sync.set.mockClear();
+    chrome.storage.sync.remove.mockClear();
+
+    window.save_options();
+
+    expect(document.getElementById("status").textContent).toContain(
+      "cannot be empty"
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(false);
+  });
+
+  it("preserves the supported unexposed subtitle nudge amount when saving", async () => {
+    const chrome = bootOptions({ syncData: { subtitleNudgeAmount: 0.004 } });
+    await flushAsyncWork(3);
+
+    window.save_options();
+
+    expect(
+      window.vscExpandStoredSettings(chrome.storage.sync._dump())
+        .subtitleNudgeAmount
+    ).toBe(0.004);
+  });
+
+  it("does not turn a blank per-site preferred speed into the 1.8 fast default", async () => {
+    const chrome = bootOptions();
+    await flushAsyncWork(3);
+    const shortsRule = Array.from(document.querySelectorAll(".site-rule")).find(
+      (rule) => rule.querySelector(".site-title").value === "YouTube Shorts"
+    );
+
+    expect(shortsRule).toBeTruthy();
+    expect(shortsRule.querySelector(".site-preferredSpeed").value).toBe("");
+    window.save_options();
+
+    const expanded = window.vscExpandStoredSettings(chrome.storage.sync._dump());
+    const savedShortsRule = expanded.siteRules.find(
+      (rule) => rule.title === "YouTube Shorts"
+    );
+    expect(savedShortsRule.preferredSpeed).toBeUndefined();
+  });
+
+  it("keeps the loaded UI and blocks saves when a settings reload fails", async () => {
+    const chrome = bootOptions({
+      syncData: {
+        rememberSpeed: true,
+        siteRules: [{ pattern: "example.org", enabled: true }]
+      }
+    });
+    await flushAsyncWork(3);
+    const originalRuleCount = document.querySelectorAll(".site-rule").length;
+
+    chrome.storage.sync.get.mockImplementationOnce(function (_keys, callback) {
+      chrome.runtime.lastError = { message: "temporary read failure" };
+      callback({});
+      chrome.runtime.lastError = null;
+    });
+    chrome.storage.sync.set.mockClear();
+    chrome.storage.sync.remove.mockClear();
+
+    window.restore_options();
+
+    expect(document.getElementById("rememberSpeed").checked).toBe(true);
+    expect(document.querySelectorAll(".site-rule")).toHaveLength(
+      originalRuleCount
+    );
+    expect(document.getElementById("save").disabled).toBe(true);
+    expect(document.getElementById("status").textContent).toContain(
+      "temporary read failure"
+    );
+
+    document.getElementById("rememberSpeed").checked = false;
+    window.save_options();
+
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(true);
+    expect(document.getElementById("status").textContent).toContain(
+      "Settings have not loaded"
+    );
+  });
+
+  it("does not clear local data or live rows when the sync reset fails", async () => {
+    const chrome = bootOptions({
+      syncData: {
+        keyBindings: [
+          { action: "display", code: "KeyV", value: 0, predefined: true },
+          { action: "pause", code: "KeyQ", value: 0, predefined: false }
+        ]
+      },
+      localData: {
+        customButtonIcons: { faster: { slug: "rocket" } },
+        rememberedSpeeds: { "https://example.org/video.mp4": 1.5 }
+      }
+    });
+    await flushAsyncWork(3);
+    expect(
+      document.querySelector('.shortcut-row.customs[data-action="pause"]')
+    ).not.toBeNull();
+
+    chrome.storage.local.remove.mockClear();
+    chrome.storage.sync.remove.mockImplementationOnce(function (_keys, callback) {
+      chrome.runtime.lastError = { message: "sync reset failed" };
+      callback();
+      chrome.runtime.lastError = null;
+    });
+
+    window.restore_defaults();
+    await flushAsyncWork(3);
+
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.local._dump().customButtonIcons).toBeDefined();
+    expect(chrome.storage.local._dump().rememberedSpeeds).toBeDefined();
+    expect(
+      document.querySelector('.shortcut-row.customs[data-action="pause"]')
+    ).not.toBeNull();
+    expect(document.getElementById("save").disabled).toBe(false);
+    expect(document.getElementById("status").textContent).toContain(
+      "sync reset failed"
+    );
+  });
+
+  it("reports a local reset failure after resetting sync defaults", async () => {
+    const chrome = bootOptions({
+      syncData: { rememberSpeed: true, lastSpeed: 1.75 },
+      localData: { customButtonIcons: { faster: { slug: "rocket" } } }
+    });
+    await flushAsyncWork(3);
+
+    chrome.storage.local.remove.mockImplementationOnce(function (_keys, callback) {
+      chrome.runtime.lastError = { message: "local reset failed" };
+      callback();
+      chrome.runtime.lastError = null;
+    });
+
+    window.restore_defaults();
+    await flushAsyncWork(3);
+
+    expect(
+      window.vscExpandStoredSettings(chrome.storage.sync._dump()).rememberSpeed
+    ).toBe(false);
+    expect(chrome.storage.sync._dump().lastSpeed).toBe(1);
+    expect(chrome.storage.local._dump().customButtonIcons).toBeDefined();
+    expect(document.getElementById("save").disabled).toBe(false);
+    expect(document.getElementById("status").textContent).toContain(
+      "local reset failed"
+    );
+  });
+
+  it("does not remove local data when the speed reset marker cannot be written", async () => {
+    const chrome = bootOptions({
+      localData: {
+        customButtonIcons: { faster: { slug: "rocket" } },
+        rememberedSpeeds: { "https://example.org/video.mp4": 1.5 }
+      }
+    });
+    await flushAsyncWork(3);
+    chrome.storage.local.remove.mockClear();
+    chrome.storage.local.set.mockImplementationOnce(function (_items, callback) {
+      chrome.runtime.lastError = { message: "reset marker failed" };
+      callback();
+      chrome.runtime.lastError = null;
+    });
+
+    window.restore_defaults();
+    await flushAsyncWork(3);
+
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.local._dump().customButtonIcons).toBeDefined();
+    expect(chrome.storage.local._dump().rememberedSpeeds).toBeDefined();
+    expect(document.getElementById("status").textContent).toContain(
+      "reset marker failed"
+    );
   });
 
   it("restores saved settings, bindings, site rules, and popup bar order", async () => {
@@ -119,7 +350,8 @@ describe("options.js", () => {
     window.populatePopupControlBarEditor(["advance", "settings", "rewind"]);
 
     window.createSiteRule({ pattern: "youtube.com" });
-    const ruleEl = document.querySelector(".site-rule");
+    const siteRuleEls = document.querySelectorAll(".site-rule");
+    const ruleEl = siteRuleEls[siteRuleEls.length - 1];
     ruleEl.querySelector(".override-placement").checked = true;
     ruleEl.querySelector(".site-controllerLocation").value = "top-right";
     ruleEl.querySelector(".site-controllerMarginTop").value = "300";
@@ -142,44 +374,31 @@ describe("options.js", () => {
 
     window.save_options();
 
-    expect(chrome.storage.sync.remove).toHaveBeenCalledWith(
-      [
-        "resetSpeed",
-        "speedStep",
-        "fastSpeed",
-        "rewindTime",
-        "advanceTime",
-        "resetKeyCode",
-        "slowerKeyCode",
-        "fasterKeyCode",
-        "rewindKeyCode",
-        "advanceKeyCode",
-        "fastKeyCode",
-        "blacklist"
-      ],
-      expect.any(Function)
+    const savedSettings = window.vscExpandStoredSettings(
+      chrome.storage.sync._dump()
     );
-
-    const savedSettings = chrome.storage.sync.set.mock.calls.at(-1)[0];
     expect(savedSettings.rememberSpeed).toBe(true);
     expect(savedSettings.hideWithControlsTimer).toBe(15);
     expect(savedSettings.controllerLocation).toBe("bottom-left");
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
     expect(savedSettings.popupControllerButtons).toEqual(["advance", "rewind"]);
-    expect(savedSettings.siteRules).toEqual([
-      {
-        pattern: "youtube.com",
-        enabled: true,
-        controllerLocation: "top-right",
-        controllerMarginTop: 200,
-        controllerMarginBottom: 0,
-        hideWithControls: true,
-        hideWithControlsTimer: 0.1,
-        showPopupControlBar: false,
-        popupControllerButtons: ["advance", "rewind"]
-      }
-    ]);
+    expect(savedSettings.siteRules).toHaveLength(4);
+    expect(savedSettings.siteRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pattern: "youtube.com",
+          enabled: true,
+          controllerLocation: "top-right",
+          controllerMarginTop: 200,
+          controllerMarginBottom: 0,
+          hideWithControls: true,
+          hideWithControlsTimer: 0.1,
+          showPopupControlBar: false,
+          popupControllerButtons: ["advance", "rewind"]
+        })
+      ])
+    );
   });
 
   it("blocks save when a site rule regex is invalid", async () => {

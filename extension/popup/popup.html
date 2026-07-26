@@ -4,9 +4,10 @@
     <meta charset="utf-8" />
     <title>Speeder</title>
     <link rel="stylesheet" href="popup.css" />
-    <script src="shared/site-rules.js"></script>
-    <script src="shared/popup-controls.js"></script>
-    <script src="ui-icons.js"></script>
+    <script src="../shared/settings-core.js"></script>
+    <script src="../shared/site-rules.js"></script>
+    <script src="../shared/popup-controls.js"></script>
+    <script src="../shared/ui-icons.js"></script>
     <script src="popup.js"></script>
   </head>
   <body>
@@ -17,6 +18,12 @@
       </div>
       <div class="popup-actions">
         <button id="refresh">Rescan page for videos</button>
+        <button
+          id="forceLastSavedSpeed"
+          class="popup-compact-action"
+          type="button"
+          aria-pressed="false"
+        >Force last saved speed</button>
         <div class="popup-divider"></div>
         <div id="popupControlBar" class="popup-control-bar">
           <span id="popupSpeed" class="popup-speed">1.00</span>
@@ -66,7 +73,7 @@
               aria-label="Support on Ko-fi (opens in new tab)"
             >
               <img
-                src="images/kofi_symbol.svg"
+                src="../assets/images/kofi_symbol.svg"
                 width="28"
                 height="22"
                 alt=""

@@ -1,4 +1,3 @@
-const { afterEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
@@ -31,8 +30,11 @@ function bootInject(options) {
     );
   window.cancelIdleCallback = (id) => clearTimeout(id);
 
-  evaluateScript("ui-icons.js");
-  evaluateScript("inject.js");
+  evaluateScript("extension/shared/controller-utils.js");
+  evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/site-rules.js");
+  evaluateScript("extension/shared/ui-icons.js");
+  evaluateScript("extension/content/inject.js");
 
   return chrome;
 }
@@ -116,14 +118,14 @@ describe("inject.js helper logic", () => {
     bootInject();
     await flushAsyncWork(3);
 
-    window.tc.settings.siteRules = [{ pattern: "localhost", enabled: false }];
+    window.tc.settings.siteRules = [{ pattern: "example.org", enabled: false }];
     window.captureSiteRuleBase();
     expect(window.applySiteRuleOverrides()).toBe(true);
 
     window.resetSettingsFromSiteRuleBase();
     window.tc.settings.siteRules = [
       {
-        pattern: "localhost",
+        pattern: "example.org",
         controllerLocation: "bottom-left",
         controllerMarginTop: 300,
         controllerMarginBottom: -10,
@@ -137,5 +139,250 @@ describe("inject.js helper logic", () => {
     expect(window.tc.settings.controllerMarginTop).toBe(200);
     expect(window.tc.settings.controllerMarginBottom).toBe(0);
     expect(window.tc.settings.rememberSpeed).toBe(true);
+
+    window.resetSettingsFromSiteRuleBase();
+    window.tc.settings.shortcutTargetMode = "closest";
+    window.tc.settings.siteRules = [
+      { pattern: "example.org", shortcutTargetMode: "all" }
+    ];
+    window.captureSiteRuleBase();
+    window.applySiteRuleOverrides();
+    expect(window.tc.settings.shortcutTargetMode).toBe("all");
+  });
+
+  it("sizes and positions the controller host to the video bounds", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const mount = document.createElement("div");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    wrapper.className = "vsc-controller";
+    mount.append(video, wrapper);
+    document.body.appendChild(mount);
+
+    Object.defineProperties(mount, {
+      offsetWidth: { value: 400 },
+      offsetHeight: { value: 240 },
+      clientLeft: { value: 2 },
+      clientTop: { value: 2 }
+    });
+    mount.getBoundingClientRect = () => ({
+      left: 100,
+      top: 50,
+      right: 500,
+      bottom: 290,
+      width: 400,
+      height: 240
+    });
+    video.getBoundingClientRect = () => ({
+      left: 140,
+      top: 70,
+      right: 460,
+      bottom: 250,
+      width: 320,
+      height: 180
+    });
+
+    window.positionControllerHost(wrapper, video, mount);
+
+    expect(wrapper.style.getPropertyValue("left")).toBe("38px");
+    expect(wrapper.style.getPropertyValue("top")).toBe("18px");
+    expect(wrapper.style.getPropertyValue("width")).toBe("320px");
+    expect(wrapper.style.getPropertyValue("height")).toBe("180px");
+    expect(wrapper.style.getPropertyPriority("width")).toBe("important");
+  });
+
+  it("does not mount the controller outside a player stacking boundary", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const page = document.createElement("main");
+    const outsidePlayer = document.createElement("section");
+    const isolatedPlayer = document.createElement("div");
+    const videoParent = document.createElement("div");
+    const video = document.createElement("video");
+    isolatedPlayer.style.isolation = "isolate";
+    videoParent.appendChild(video);
+    isolatedPlayer.appendChild(videoParent);
+    outsidePlayer.appendChild(isolatedPlayer);
+    page.appendChild(outsidePlayer);
+    document.body.appendChild(page);
+
+    const rect = {
+      left: 10,
+      top: 100,
+      right: 650,
+      bottom: 460,
+      width: 640,
+      height: 360
+    };
+    [video, videoParent, isolatedPlayer, outsidePlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    expect(window.getControllerMount(video)).toBe(isolatedPlayer);
+  });
+
+  it("keeps the controller inside a nested fullscreen player subtree", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const isolatedPlayer = document.createElement("div");
+    isolatedPlayer.style.isolation = "isolate";
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    provider.appendChild(video);
+    fullscreenPlayer.appendChild(provider);
+    isolatedPlayer.appendChild(fullscreenPlayer);
+    document.body.appendChild(isolatedPlayer);
+
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 360,
+      width: 640,
+      height: 360
+    };
+    [video, provider, fullscreenPlayer, isolatedPlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    expect(window.getControllerMount(video)).toBe(isolatedPlayer);
+    expect(window.getControllerMount(video, fullscreenPlayer)).toBe(
+      fullscreenPlayer
+    );
+  });
+
+  it("remounts the controller on fullscreen entry and restores it on exit", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const isolatedPlayer = document.createElement("div");
+    isolatedPlayer.style.isolation = "isolate";
+    const fullscreenPlayer = document.createElement("media-player");
+    const provider = document.createElement("media-provider");
+    const video = document.createElement("video");
+    const wrapper = document.createElement("div");
+    wrapper.className = "vsc-controller";
+    provider.appendChild(video);
+    fullscreenPlayer.appendChild(provider);
+    isolatedPlayer.append(fullscreenPlayer, wrapper);
+    document.body.appendChild(isolatedPlayer);
+
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 360,
+      width: 640,
+      height: 360
+    };
+    [video, provider, fullscreenPlayer, isolatedPlayer].forEach((element) => {
+      element.getBoundingClientRect = () => rect;
+    });
+
+    const controller = {
+      video,
+      div: wrapper,
+      normalControllerMount: isolatedPlayer
+    };
+    window.setupControllerHostTracking(controller, wrapper, isolatedPlayer);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: fullscreenPlayer
+    });
+
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.parentElement).toBe(fullscreenPlayer);
+
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      value: null
+    });
+    expect(window.syncControllerFullscreenMount(controller)).toBe(true);
+    expect(wrapper.parentElement).toBe(isolatedPlayer);
+
+    wrapper.remove();
+    controller.controllerHostCleanup();
+  });
+
+  it("force-rescans media missed during initial hydration", async () => {
+    bootInject();
+    await flushAsyncWork(3);
+
+    const video = document.createElement("video");
+    const source = document.createElement("source");
+    source.src = "https://example.org/late-source.mp4";
+    video.appendChild(source);
+    document.body.appendChild(video);
+
+    expect(video.vsc).toBeUndefined();
+    window.initializeWhenReady(document, true);
+
+    expect(video.vsc).toBeDefined();
+    expect(video.vsc.div).toBeDefined();
+  });
+
+  it("only blocks page key handlers when the shortcut force option is enabled", async () => {
+    bootInject({
+      syncData: {
+        keyBindings: [
+          {
+            action: "faster",
+            code: "KeyD",
+            value: 0.1,
+            force: false
+          }
+        ]
+      }
+    });
+    await flushAsyncWork(3);
+
+    const video = document.createElement("video");
+    video.src = "https://example.org/shortcut.mp4";
+    document.body.appendChild(video);
+    window.ensureController(video, document.body);
+    let pageKeydowns = 0;
+    let pageCaptureKeydowns = 0;
+    document.addEventListener(
+      "keydown",
+      function() {
+        pageCaptureKeydowns += 1;
+      },
+      true
+    );
+    document.body.addEventListener("keydown", function() {
+      pageKeydowns += 1;
+    });
+
+    const unblocked = new KeyboardEvent("keydown", {
+      key: "d",
+      code: "KeyD",
+      bubbles: true,
+      cancelable: true
+    });
+    video.dispatchEvent(unblocked);
+
+    expect(video.playbackRate).toBeCloseTo(1.1, 5);
+    expect(pageKeydowns).toBe(1);
+    expect(pageCaptureKeydowns).toBe(1);
+    expect(unblocked.defaultPrevented).toBe(false);
+
+    window.tc.settings.keyBindings[0].force = "true";
+    const blocked = new KeyboardEvent("keydown", {
+      key: "d",
+      code: "KeyD",
+      bubbles: true,
+      cancelable: true
+    });
+    video.dispatchEvent(blocked);
+
+    expect(video.playbackRate).toBeCloseTo(1.2, 5);
+    expect(pageKeydowns).toBe(1);
+    expect(pageCaptureKeydowns).toBe(1);
+    expect(blocked.defaultPrevented).toBe(true);
   });
 });

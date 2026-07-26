@@ -6,24 +6,47 @@ import {
 } from "./helpers/browser.js";
 
 async function setupImportExport(overrides = {}) {
-  loadHtml("options.html");
+  loadHtml("extension/options/options.html");
   globalThis.chrome = createChromeMock(overrides);
   window.chrome = globalThis.chrome;
   const restoreSpy = vi.fn();
   globalThis.restore_options = restoreSpy;
   window.restore_options = restoreSpy;
-  loadScript("shared/import-export.js");
-  loadScript("importExport.js");
+  loadScript("extension/shared/settings-core.js");
+  loadScript("extension/shared/import-export.js");
+  loadScript("extension/options/import-export.js");
   await flushAsyncWork();
   return globalThis.chrome;
 }
 
 describe("import/export flows", () => {
+  it("keeps editable rule titles in normalized exports", async () => {
+    await setupImportExport();
+    const settings = globalThis.vscGetSettingsDefaults();
+    settings.siteRules[1].title = "My Shorts rule";
+    settings.siteRules[1].shortcutTargetMode = "all";
+    settings.siteRules[1].showAmbientLoopControls = true;
+
+    const exported = globalThis.normalizedSettingsForExport(
+      globalThis.vscBuildStoredSettingsDiff(settings)
+    );
+    const restored = globalThis.vscExpandStoredSettings(exported);
+
+    expect(restored.siteRules[1].title).toBe("My Shorts rule");
+    expect(restored.siteRules[1].shortcutTargetMode).toBe("all");
+    expect(restored.siteRules[1].showAmbientLoopControls).toBe(true);
+    expect(exported.siteRules.map((rule) => rule.title)).toEqual([
+      "YouTube videos",
+      "My Shorts rule",
+      "YouTube Shorts (mobile)"
+    ]);
+  });
+
   it("exports sync and local settings as a JSON download", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 4, 8, 9, 10));
     const chrome = await setupImportExport({
-      sync: { rememberSpeed: true },
+      sync: { rememberSpeed: true, shortcutTargetMode: "all" },
       local: { customButtonIcons: { faster: { slug: "rocket" } } }
     });
     const OriginalBlob = window.Blob;
@@ -67,7 +90,16 @@ describe("import/export flows", () => {
     expect(JSON.parse(blobText)).toEqual({
       version: "1.1",
       exportDate: "2026-04-04T12:09:10.000Z",
-      settings: { rememberSpeed: true },
+      settings: {
+        rememberSpeed: true,
+        shortcutTargetMode: "all",
+        siteRulesFormat: "defaults-diff-v2",
+        siteRules: [
+          expect.objectContaining({ title: "YouTube videos" }),
+          expect.objectContaining({ title: "YouTube Shorts" }),
+          expect.objectContaining({ title: "YouTube Shorts (mobile)" })
+        ]
+      },
       localSettings: { customButtonIcons: { faster: { slug: "rocket" } } }
     });
     expect(document.getElementById("status").textContent).toBe(
@@ -172,7 +204,7 @@ describe("import/export flows", () => {
       { customButtonIcons: { faster: { slug: "rocket" } } },
       expect.any(Function)
     );
-    expect(chrome.storage.sync.clear).toHaveBeenCalled();
+    expect(chrome.storage.sync.clear).not.toHaveBeenCalled();
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
       { rememberSpeed: true },
       expect.any(Function)
@@ -221,7 +253,13 @@ describe("import/export flows", () => {
           {
             __text: JSON.stringify({
               enabled: false,
-              siteRules: [{ pattern: "example.com", enabled: false }]
+              siteRules: [
+                {
+                  title: "Example videos",
+                  pattern: "example.com",
+                  enabled: false
+                }
+              ]
             })
           }
         ]
@@ -230,13 +268,17 @@ describe("import/export flows", () => {
 
     expect(chrome.storage.local.clear).not.toHaveBeenCalled();
     expect(chrome.storage.local.set).not.toHaveBeenCalled();
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(
-      {
-        enabled: false,
-        siteRules: [{ pattern: "example.com", enabled: false }]
-      },
-      expect.any(Function)
+    const imported = globalThis.vscExpandStoredSettings(
+      chrome.storage.sync.__state
     );
+    expect(imported.enabled).toBe(false);
+    expect(imported.siteRules).toEqual([
+      {
+        title: "Example videos",
+        pattern: "example.com",
+        enabled: false
+      }
+    ]);
   });
 
   it("clears stale local data when a wrapped backup has empty local settings", async () => {
@@ -285,8 +327,15 @@ describe("import/export flows", () => {
       }
     });
 
-    expect(chrome.storage.local.clear).toHaveBeenCalled();
+    expect(chrome.storage.local.clear).not.toHaveBeenCalled();
+    expect(chrome.storage.local.remove).toHaveBeenCalledWith(
+      "customButtonIcons",
+      expect.any(Function)
+    );
     expect(chrome.storage.local.set).not.toHaveBeenCalled();
+    expect(chrome.storage.local.__state.lucideTagsCacheV1).toEqual({
+      stale: true
+    });
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
       { rememberSpeed: true },
       expect.any(Function)

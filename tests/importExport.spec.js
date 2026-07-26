@@ -1,8 +1,8 @@
-const { afterEach, beforeEach, describe, expect, it, vi } = require("vitest");
 const {
   createChromeMock,
   evaluateScript,
   flushAsyncWork,
+  fireDOMContentLoaded,
   installCommonWindowMocks,
   loadHtmlString
 } = require("./helpers/extension-test-utils");
@@ -26,18 +26,39 @@ function bootImportExport(options) {
   global.chrome = chrome;
   window.chrome = chrome;
 
+  class TestBlob {
+    constructor(parts, options) {
+      this.parts = parts;
+      this.options = options;
+    }
+
+    async text() {
+      return this.parts.join("");
+    }
+  }
+  global.Blob = TestBlob;
+  window.Blob = TestBlob;
+
   const createObjectURL = vi.fn(() => "blob:test");
   const revokeObjectURL = vi.fn();
-  vi.stubGlobal("URL", {
-    createObjectURL,
-    revokeObjectURL
+  Object.defineProperty(window.URL, "createObjectURL", {
+    configurable: true,
+    value: createObjectURL
   });
+  Object.defineProperty(window.URL, "revokeObjectURL", {
+    configurable: true,
+    value: revokeObjectURL
+  });
+  global.URL = window.URL;
 
-  evaluateScript("importExport.js");
+  evaluateScript("extension/shared/settings-core.js");
+  evaluateScript("extension/shared/import-export.js");
+  evaluateScript("extension/options/import-export.js");
+  fireDOMContentLoaded();
   return { chrome, createObjectURL, revokeObjectURL };
 }
 
-describe("importExport.js", () => {
+describe("options/import-export.js", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -53,14 +74,15 @@ describe("importExport.js", () => {
     bootImportExport();
 
     expect(window.generateBackupFilename()).toBe(
-      "speeder-backup_2026-04-04_13.14.15.json"
+      "speeder-backup_2026-04-04_09.14.15.json"
     );
   });
 
   it("exports sync and local settings into a downloadable backup", async () => {
-    const clickSpy = vi
-      .spyOn(window.HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => {});
+    Object.defineProperty(window.HTMLAnchorElement.prototype, "click", {
+      configurable: true,
+      value: vi.fn()
+    });
     const { createObjectURL, revokeObjectURL } = bootImportExport({
       syncData: {
         rememberSpeed: true,
@@ -74,7 +96,6 @@ describe("importExport.js", () => {
     });
 
     document.querySelector("#exportSettings").click();
-    await flushAsyncWork();
 
     expect(createObjectURL).toHaveBeenCalledTimes(1);
     const blob = createObjectURL.mock.calls[0][0];
@@ -82,15 +103,15 @@ describe("importExport.js", () => {
 
     expect(backup.settings.rememberSpeed).toBe(true);
     expect(backup.localSettings.customButtonIcons.faster.slug).toBe("rocket");
-    expect(clickSpy).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:test");
     expect(document.querySelector("#status").textContent).toContain("exported");
   });
 
   it("omits Lucide tags cache from exported localSettings", async () => {
-    vi.spyOn(window.HTMLAnchorElement.prototype, "click").mockImplementation(
-      () => {}
-    );
+    Object.defineProperty(window.HTMLAnchorElement.prototype, "click", {
+      configurable: true,
+      value: vi.fn()
+    });
     const { createObjectURL } = bootImportExport({
       syncData: { rememberSpeed: true },
       localData: {
@@ -103,7 +124,6 @@ describe("importExport.js", () => {
     });
 
     document.querySelector("#exportSettings").click();
-    await flushAsyncWork();
 
     const blob = createObjectURL.mock.calls[0][0];
     const backup = JSON.parse(await blob.text());
@@ -159,6 +179,7 @@ describe("importExport.js", () => {
     }
 
     vi.stubGlobal("FileReader", FakeFileReader);
+    window.FileReader = FakeFileReader;
 
     document.querySelector("#importSettings").click();
     await flushAsyncWork();
@@ -171,7 +192,7 @@ describe("importExport.js", () => {
       },
       expect.any(Function)
     );
-    expect(chrome.storage.sync.clear).toHaveBeenCalled();
+    expect(chrome.storage.sync.clear).not.toHaveBeenCalled();
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
       { rememberSpeed: true, enabled: false },
       expect.any(Function)
@@ -208,6 +229,7 @@ describe("importExport.js", () => {
     }
 
     vi.stubGlobal("FileReader", FakeFileReader);
+    window.FileReader = FakeFileReader;
 
     document.querySelector("#importSettings").click();
     await flushAsyncWork();
@@ -215,5 +237,64 @@ describe("importExport.js", () => {
     expect(document.querySelector("#status").textContent).toContain(
       "Failed to parse backup file"
     );
+  });
+
+  it("rejects malformed custom icons without changing stored settings", async () => {
+    const { chrome } = bootImportExport({
+      syncData: { rememberSpeed: false },
+      localData: {
+        customButtonIcons: {
+          faster: { slug: "rocket", svg: "<svg></svg>" }
+        }
+      }
+    });
+
+    const realCreateElement = document.createElement.bind(document);
+    const fakeInput = realCreateElement("input");
+    Object.defineProperty(fakeInput, "files", {
+      configurable: true,
+      value: [
+        {
+          __contents: JSON.stringify({
+            settings: { rememberSpeed: true },
+            localSettings: { customButtonIcons: "not-an-icon-map" }
+          })
+        }
+      ]
+    });
+    fakeInput.click = vi.fn(() => {
+      fakeInput.onchange({ target: fakeInput });
+    });
+
+    vi.spyOn(document, "createElement").mockImplementation((tagName) => {
+      if (String(tagName).toLowerCase() === "input") return fakeInput;
+      return realCreateElement(tagName);
+    });
+
+    class FakeFileReader {
+      readAsText(file) {
+        this.onload({ target: { result: file.__contents } });
+      }
+    }
+
+    vi.stubGlobal("FileReader", FakeFileReader);
+    window.FileReader = FakeFileReader;
+    chrome.storage.sync.set.mockClear();
+    chrome.storage.local.set.mockClear();
+    chrome.storage.local.remove.mockClear();
+
+    document.querySelector("#importSettings").click();
+    await flushAsyncWork();
+
+    expect(document.querySelector("#status").textContent).toContain(
+      "Invalid backup file format"
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.local.set).not.toHaveBeenCalled();
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.sync._dump().rememberSpeed).toBe(false);
+    expect(chrome.storage.local._dump().customButtonIcons).toEqual({
+      faster: { slug: "rocket", svg: "<svg></svg>" }
+    });
   });
 });

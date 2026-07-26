@@ -5,14 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Speeder Settings</title>
     <link rel="stylesheet" href="options.css" />
-    <script src="shared/controller-utils.js"></script>
-    <script src="shared/key-bindings.js"></script>
-    <script src="shared/popup-controls.js"></script>
-    <script src="ui-icons.js"></script>
+    <script src="../shared/controller-utils.js"></script>
+    <script src="../shared/key-bindings.js"></script>
+    <script src="../shared/settings-core.js"></script>
+    <script src="../shared/popup-controls.js"></script>
+    <script src="../shared/ui-icons.js"></script>
     <script src="lucide-client.js"></script>
     <script src="options.js"></script>
-    <script src="shared/import-export.js"></script>
-    <script src="importExport.js"></script>
+    <script src="../shared/import-export.js"></script>
+    <script src="import-export.js"></script>
   </head>
   <body>
     <div class="page-shell">
@@ -38,7 +39,7 @@
             >
               <img
                 class="support-cta-kofi-img"
-                src="images/kofi_symbol.svg"
+                src="../assets/images/kofi_symbol.svg"
                 width="241"
                 height="194"
                 alt=""
@@ -249,7 +250,7 @@
             </div>
           </div>
 
-          <select id="addShortcutSelector">
+          <select id="addShortcutSelector" aria-label="Add another shortcut">
             <option value="">Add shortcut&hellip;</option>
           </select>
         </section>
@@ -281,6 +282,17 @@
             </label>
             <input id="audioBoolean" type="checkbox" />
           </div>
+          <div class="row row-checkbox">
+            <label for="showAmbientLoopControls"
+              >Show controls on ambient/slideshow videos<br />
+              <em
+                >Also shows Speeder on muted autoplay loops used as animated
+                cards or slideshow artwork. Genuine video players are always
+                controlled regardless of this setting.</em
+              >
+            </label>
+            <input id="showAmbientLoopControls" type="checkbox" />
+          </div>
 
           <div class="defaults-divider"></div>
           <h4 class="defaults-sub-heading">Playback</h4>
@@ -289,9 +301,9 @@
             <label for="rememberSpeed"
               >Remember playback speed<br />
               <em
-                >Stores speed per source so revisiting the same media can restore
-                it. Separate from &ldquo;Force last saved speed,&rdquo; which
-                fights players that reset rate.</em
+                >Stores speeds you set with Speeder per source so revisiting the
+                same media can restore them. Separate from &ldquo;Force last
+                saved speed,&rdquo; which fights players that reset rate.</em
               >
             </label>
             <input id="rememberSpeed" type="checkbox" />
@@ -305,6 +317,20 @@
               >
             </label>
             <input id="forceLastSavedSpeed" type="checkbox" />
+          </div>
+          <div class="row">
+            <label for="shortcutTargetMode"
+              >Keyboard shortcut target<br />
+              <em
+                >Closest changes the video nearest the pointer (falling back to
+                the most visible active player). Change all keeps the legacy
+                behavior on pages with multiple players.</em
+              >
+            </label>
+            <select id="shortcutTargetMode">
+              <option value="closest">Closest active video</option>
+              <option value="all">All videos on the page</option>
+            </select>
           </div>
 
           <div class="defaults-divider"></div>
@@ -412,15 +438,15 @@
           <div class="row">
             <label for="subtitleNudgeInterval"
               >Nudge interval (milliseconds)<br /><em
-                >How often to nudge: 10&ndash;1000. Smaller values are more
-                frequent. Default: 50.</em
+                >How often to nudge: 250&ndash;1000. Smaller values are more
+                frequent. Default: 250.</em
               >
             </label>
             <input
               id="subtitleNudgeInterval"
               type="text"
               value=""
-              placeholder="50"
+              placeholder="250"
             />
           </div>
         </section>
@@ -607,7 +633,9 @@
               >
               patterns like <code>/(.+)youtube\.com(\/*)$/gi</code>. Turn on a
               row only when you want that group to override the general defaults
-              above.
+              above. Regex and plain-path rules test both the literal URL and a
+              safely decoded path, query, and hash, so readable text can match
+              <code>%xx</code>-encoded URLs too.
             </p>
           </div>
           <div id="siteRulesContainer"></div>
@@ -626,11 +654,20 @@
               >
                 <span class="site-rule-toggle-icon" aria-hidden="true">&hellip;</span>
               </button>
-              <input
-                type="text"
-                class="site-pattern"
-                placeholder="e.g., youtube.com or /regex/gi"
-              />
+              <div class="site-rule-identity">
+                <input
+                  type="text"
+                  class="site-title"
+                  placeholder="Rule title (optional)"
+                  aria-label="Site rule title"
+                />
+                <input
+                  type="text"
+                  class="site-pattern"
+                  placeholder="e.g., youtube.com or /regex/gi"
+                  aria-label="Site rule URL pattern"
+                />
+              </div>
               <button type="button" class="remove-site-rule">Remove</button>
             </div>
             <div class="site-rule-body">
@@ -700,6 +737,26 @@
                 <div class="site-rule-override-section">
                   <label class="site-override-lead">
                     <span
+                      >Override shortcut target for this site<br /><em
+                        >Choose whether keyboard and popup control-bar actions
+                        affect the closest active video or every video.</em
+                      ></span
+                    >
+                    <input type="checkbox" class="override-shortcut-target" />
+                  </label>
+                  <div class="site-shortcut-target-container">
+                    <div class="site-rule-option site-rule-option-field">
+                      <label>Shortcut target:</label>
+                      <select class="site-shortcutTargetMode">
+                        <option value="closest">Closest active video</option>
+                        <option value="all">All videos on the page</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="site-rule-override-section">
+                  <label class="site-override-lead">
+                    <span
                       >Override hide-by-default for this site<br /><em
                         >When on, the hide-by-default toggle below replaces the
                         general default for matching URLs.</em
@@ -757,8 +814,8 @@
                   <label class="site-override-lead">
                     <span
                       >Override playback for this site<br /><em
-                        >When on, remember speed / force / audio below replace
-                        general defaults for matching URLs.</em
+                        >When on, remember speed / force / media eligibility
+                        below replace general defaults for matching URLs.</em
                       ></span
                     >
                     <input type="checkbox" class="override-playback" />
@@ -767,10 +824,10 @@
                     <div class="site-rule-option site-rule-option-checkbox">
                       <label
                         >Remember playback speed:<br /><em
-                          >Stores speed per source so revisiting the same media
-                          can restore it. Separate from &ldquo;Force last saved
-                          speed,&rdquo; which fights players that reset
-                          rate.</em
+                          >Stores speeds you set with Speeder per source so
+                          revisiting the same media can restore them. Separate
+                          from &ldquo;Force last saved speed,&rdquo; which fights
+                          players that reset rate.</em
                         ></label
                       >
                       <input type="checkbox" class="site-rememberSpeed" />
@@ -784,6 +841,21 @@
                       >
                       <input type="checkbox" class="site-forceLastSavedSpeed" />
                     </div>
+                    <div class="site-rule-option site-rule-option-field">
+                      <label
+                        >Preferred speed (0.1&ndash;16):<br /><em
+                          >Overrides the Preferred speed action for matching
+                          URLs. It does not force every video to start at this
+                          speed.</em
+                        ></label
+                      >
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        class="site-preferredSpeed"
+                        placeholder="1.80"
+                      />
+                    </div>
                     <div class="site-rule-option site-rule-option-checkbox">
                       <label
                         >Work on audio:<br /><em
@@ -792,6 +864,16 @@
                         ></label
                       >
                       <input type="checkbox" class="site-audioBoolean" />
+                    </div>
+                    <div class="site-rule-option site-rule-option-checkbox">
+                      <label
+                        >Show controls on ambient/slideshow videos:<br /><em
+                          >Also includes muted autoplay loops used as animated
+                          cards or slideshow artwork. Genuine video players are
+                          always included.</em
+                        ></label
+                      >
+                      <input type="checkbox" class="site-showAmbientLoopControls" />
                     </div>
                   </div>
                 </div>
@@ -848,12 +930,12 @@
                     </div>
                     <div class="site-rule-option site-rule-option-field">
                       <label
-                        >Nudge interval (10&ndash;1000ms):<br /><em
-                          >How often to nudge: 10&ndash;1000. Smaller values are
-                          more frequent. Default: 50.</em
+                        >Nudge interval (250&ndash;1000ms):<br /><em
+                          >How often to nudge: 250&ndash;1000. Smaller values are
+                          more frequent. Default: 250.</em
                         ></label
                       >
-                      <input type="text" class="site-subtitleNudgeInterval" placeholder="50" />
+                      <input type="text" class="site-subtitleNudgeInterval" placeholder="250" />
                     </div>
                   </div>
                 </div>
@@ -940,10 +1022,10 @@
         <section class="settings-card action-card">
           <div class="section-heading">
             <h3>Actions</h3>
-            <p class="section-intro">Save, restore, export, or import settings.</p>
+            <p class="section-intro">Changes save automatically.</p>
           </div>
           <div class="action-row">
-            <button id="save">Save Changes</button>
+            <button id="save">Save Now</button>
             <button id="restore">Restore Defaults</button>
             <button id="exportSettings">Export Settings</button>
             <button id="importSettings">Import Settings</button>

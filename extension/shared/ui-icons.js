@@ -76,7 +76,7 @@ function vscSanitizeSvgTree(svg) {
     n.remove();
   });
 
-  svg.querySelectorAll("*").forEach(function (el) {
+  [svg].concat(Array.from(svg.querySelectorAll("*"))).forEach(function (el) {
     for (var i = el.attributes.length - 1; i >= 0; i--) {
       var attr = el.attributes[i];
       var name = attr.name.toLowerCase();
@@ -94,7 +94,7 @@ function vscSanitizeSvgTree(svg) {
     }
   });
 
-  svg.setAttribute("xmlns", VSC_SVG_NS);
+  svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", VSC_SVG_NS);
   svg.setAttribute("aria-hidden", "true");
   return svg;
 }

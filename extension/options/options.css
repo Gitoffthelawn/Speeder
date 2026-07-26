@@ -322,7 +322,7 @@ label em {
 
 .shortcut-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 120px;
+  grid-template-columns: minmax(0, 1fr) 120px 120px 38px;
   gap: 12px;
   align-items: center;
   padding: 10px 0;
@@ -332,10 +332,6 @@ label em {
 .shortcuts-grid .shortcut-row:first-child {
   padding-top: 0;
   border-top: 0;
-}
-
-.shortcut-row.customs {
-  grid-template-columns: minmax(0, 1fr) 120px 120px 38px;
 }
 
 .shortcut-label {
@@ -905,8 +901,19 @@ button.lucide-result-tile.lucide-picked {
   align-items: center;
 }
 
+.site-rule-identity {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.45fr) minmax(220px, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.site-title,
 .site-pattern {
   min-width: 0;
+}
+
+.site-pattern {
   font-family: "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
@@ -1050,6 +1057,20 @@ button.lucide-result-tile.lucide-picked {
   font-weight: 500;
 }
 
+#status:not(:empty) {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.16);
+}
+
 #status:empty {
   display: none;
 }
@@ -1173,6 +1194,10 @@ button.lucide-result-tile.lucide-picked {
     grid-template-columns: 36px minmax(0, 1fr);
   }
 
+  .site-rule-identity {
+    grid-template-columns: 1fr;
+  }
+
   .remove-site-rule {
     grid-column: 1 / -1;
   }
@@ -1196,6 +1221,10 @@ button.lucide-result-tile.lucide-picked {
   }
 
   .site-rule-header {
+    grid-template-columns: 1fr;
+  }
+
+  .site-rule-identity {
     grid-template-columns: 1fr;
   }
 }

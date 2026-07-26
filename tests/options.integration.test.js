@@ -7,16 +7,17 @@ import {
 } from "./helpers/browser.js";
 
 async function setupOptions(overrides = {}) {
-  loadHtml("options.html");
+  loadHtml("extension/options/options.html");
   globalThis.chrome = createChromeMock(overrides);
   window.chrome = globalThis.chrome;
   globalThis.fetch = vi.fn();
-  loadScript("shared/controller-utils.js");
-  loadScript("shared/key-bindings.js");
-  loadScript("shared/popup-controls.js");
-  loadScript("ui-icons.js");
-  loadScript("lucide-client.js");
-  loadScript("options.js");
+  loadScript("extension/shared/controller-utils.js");
+  loadScript("extension/shared/key-bindings.js");
+  loadScript("extension/shared/settings-core.js");
+  loadScript("extension/shared/popup-controls.js");
+  loadScript("extension/shared/ui-icons.js");
+  loadScript("extension/options/lucide-client.js");
+  loadScript("extension/options/options.js");
   triggerDomContentLoaded();
   await flushAsyncWork();
   return globalThis.chrome;
@@ -28,7 +29,9 @@ describe("options page", () => {
       manifestVersion: "5.1.7.0",
       sync: {
         rememberSpeed: true,
+        showAmbientLoopControls: true,
         enabled: false,
+        shortcutTargetMode: "all",
         subtitleNudgeEnabledByDefault: false,
         popupMatchHoverControls: false,
         popupControllerButtons: ["rewind", "settings", "advance", "advance"],
@@ -38,8 +41,12 @@ describe("options page", () => {
         ],
         siteRules: [
           {
+            title: "YouTube testing",
             pattern: "youtube.com",
             enabled: true,
+            shortcutTargetMode: "all",
+            preferredSpeed: 2.4,
+            showAmbientLoopControls: false,
             subtitleNudgeEnabledByDefault: false,
             showPopupControlBar: false,
             popupControllerButtons: ["advance", "settings", "advance"]
@@ -50,7 +57,9 @@ describe("options page", () => {
 
     expect(document.getElementById("app-version").textContent).toBe("5.1.7.0");
     expect(document.getElementById("rememberSpeed").checked).toBe(true);
+    expect(document.getElementById("showAmbientLoopControls").checked).toBe(true);
     expect(document.getElementById("enabled").checked).toBe(false);
+    expect(document.getElementById("shortcutTargetMode").value).toBe("all");
     expect(document.getElementById("subtitleNudgeEnabledByDefault").checked).toBe(
       false
     );
@@ -62,6 +71,18 @@ describe("options page", () => {
     );
     expect(document.querySelector(".site-rule .override-subtitleNudge").checked).toBe(
       true
+    );
+    expect(document.querySelector(".site-rule .site-preferredSpeed").value).toBe(
+      "2.4"
+    );
+    expect(
+      document.querySelector(".site-rule .site-showAmbientLoopControls").checked
+    ).toBe(false);
+    expect(
+      document.querySelector(".site-rule .site-shortcutTargetMode").value
+    ).toBe("all");
+    expect(document.querySelector(".site-rule .site-title").value).toBe(
+      "YouTube testing"
     );
     expect(
       document.querySelector(".site-rule .site-subtitleNudgeEnabledByDefault")
@@ -83,6 +104,48 @@ describe("options page", () => {
       "Invalid site rule regex"
     );
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it("adds and restores duplicate actions with Shift bindings", async () => {
+    const chrome = await setupOptions();
+    const selector = document.getElementById("addShortcutSelector");
+    expect(selector.querySelector('option[value="rewind"]')).not.toBeNull();
+
+    selector.value = "rewind";
+    selector.dispatchEvent(new window.Event("change", { bubbles: true }));
+    const duplicate = document.querySelector(
+      '.shortcut-row.customs[data-action="rewind"]'
+    );
+    duplicate.querySelector(".customKey").dispatchEvent(
+      new window.KeyboardEvent("keydown", {
+        key: "Z",
+        code: "KeyZ",
+        shiftKey: true,
+        bubbles: true
+      })
+    );
+    duplicate.querySelector(".customValue").value = "3";
+
+    globalThis.save_options();
+    expect(
+      chrome.storage.sync.__state.keyBindings.filter(
+        (binding) => binding.action === "rewind"
+      )
+    ).toEqual([
+      expect.objectContaining({ value: 10, shiftKey: false }),
+      expect.objectContaining({ value: 3, shiftKey: true })
+    ]);
+
+    globalThis.restore_options();
+    await flushAsyncWork();
+    expect(
+      document.querySelectorAll('.shortcut-row[data-action="rewind"]')
+    ).toHaveLength(2);
+    expect(
+      document.querySelector(
+        '.shortcut-row.customs[data-action="rewind"] .customKey'
+      ).value
+    ).toBe("Shift+Z");
   });
 
   it("shows a more-menu trigger for collapsed site rules and a collapse trigger when open", async () => {
@@ -166,6 +229,7 @@ describe("options page", () => {
     const chrome = await setupOptions();
 
     document.getElementById("rememberSpeed").checked = true;
+    document.getElementById("showAmbientLoopControls").checked = true;
     document.getElementById("hideWithControlsTimer").value = "20";
     document.getElementById("controllerOpacity").value = "0";
     document.getElementById("controllerMarginTop").value = "250";
@@ -185,9 +249,14 @@ describe("options page", () => {
 
     globalThis.createSiteRule(null);
     const rule = document.querySelector(".site-rule");
+    rule.querySelector(".site-title").value = "My YouTube rule";
     rule.querySelector(".site-pattern").value = "youtube.com";
     rule.querySelector(".override-playback").checked = true;
     rule.querySelector(".site-rememberSpeed").checked = true;
+    rule.querySelector(".site-showAmbientLoopControls").checked = false;
+    rule.querySelector(".site-preferredSpeed").value = "2.4";
+    rule.querySelector(".override-shortcut-target").checked = true;
+    rule.querySelector(".site-shortcutTargetMode").value = "all";
     rule.querySelector(".override-opacity").checked = true;
     rule.querySelector(".site-controllerOpacity").value = "0";
     rule.querySelector(".override-subtitleNudge").checked = true;
@@ -207,35 +276,72 @@ describe("options page", () => {
 
     globalThis.save_options();
 
-    expect(chrome.storage.sync.remove).toHaveBeenCalled();
-    const savedSettings =
-      chrome.storage.sync.set.mock.calls[
-        chrome.storage.sync.set.mock.calls.length - 1
-      ][0];
+    const savedSettings = globalThis.vscExpandStoredSettings(
+      chrome.storage.sync.__state
+    );
 
     expect(savedSettings.rememberSpeed).toBe(true);
+    expect(savedSettings.showAmbientLoopControls).toBe(true);
     expect(savedSettings.hideWithControlsTimer).toBe(15);
     expect(savedSettings.controllerOpacity).toBe(0);
     expect(savedSettings.controllerMarginTop).toBe(200);
     expect(savedSettings.controllerMarginBottom).toBe(0);
     expect(savedSettings.subtitleNudgeEnabledByDefault).toBe(false);
-    expect(savedSettings.subtitleNudgeInterval).toBe(10);
+    expect(savedSettings.subtitleNudgeInterval).toBe(250);
     expect(savedSettings.showPopupControlBar).toBe(false);
     expect(savedSettings.popupMatchHoverControls).toBe(false);
     expect(savedSettings.popupControllerButtons).toEqual(["rewind", "faster"]);
     expect(savedSettings.siteRules).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+        title: "My YouTube rule",
         pattern: "youtube.com",
         rememberSpeed: true,
+        showAmbientLoopControls: false,
+        shortcutTargetMode: "all",
+        preferredSpeed: 2.4,
         controllerOpacity: 0,
         enableSubtitleNudge: true,
         subtitleNudgeEnabledByDefault: false,
-        subtitleNudgeInterval: 75,
+        subtitleNudgeInterval: 250,
         showPopupControlBar: false,
         popupControllerButtons: ["advance"]
       })
       ])
     );
+  });
+
+  it("restores managed defaults and clears private local UI/runtime data", async () => {
+    const chrome = await setupOptions({
+      sync: {
+        rememberSpeed: true,
+        siteRules: [],
+        lastSpeed: 1.6,
+        futureRuntimeValue: "keep"
+      },
+      local: {
+        customButtonIcons: { faster: { slug: "rocket" } },
+        rememberedSpeeds: { "https://example.com/video.mp4": 1.75 },
+        unrelatedLocalValue: "keep"
+      }
+    });
+
+    globalThis.restore_defaults();
+    await flushAsyncWork();
+
+    const raw = chrome.storage.sync.__state;
+    const restored = globalThis.vscExpandStoredSettings(raw);
+    expect(restored.rememberSpeed).toBe(false);
+    expect(restored.siteRules).toEqual(
+      globalThis.vscGetSettingsDefaults().siteRules
+    );
+    expect(raw.lastSpeed).toBe(1);
+    expect(raw.futureRuntimeValue).toBe("keep");
+    expect(chrome.storage.local.__state.customButtonIcons).toBeUndefined();
+    expect(chrome.storage.local.__state.rememberedSpeeds).toBeUndefined();
+    expect(
+      chrome.storage.local.__state.rememberedSpeedsResetAt
+    ).toEqual(expect.any(Number));
+    expect(chrome.storage.local.__state.unrelatedLocalValue).toBe("keep");
   });
 });

@@ -8,6 +8,9 @@
   root.SpeederShared = root.SpeederShared || {};
   root.SpeederShared.keyBindings = exports;
 })(typeof globalThis !== "undefined" ? globalThis : this, function() {
+  var MIN_SPEED = 0.1;
+  var MAX_SPEED = 16;
+
   function normalizeBindingKey(key) {
     if (typeof key !== "string" || key.length === 0) return null;
     if (key === "Spacebar") return " ";
@@ -112,11 +115,64 @@
       : null;
   }
 
+  var defaultActionValues = {
+    slower: 0.1,
+    faster: 0.1,
+    rewind: 10,
+    advance: 10,
+    fast: 1.8,
+    louder: 0.1,
+    softer: 0.1
+  };
+
+  function getActionValueError(action, value) {
+    var numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "must be a finite number";
+    if (
+      (action === "slower" || action === "faster") &&
+      (numericValue <= 0 || numericValue > MAX_SPEED)
+    ) {
+      return "must be greater than 0 and no more than " + MAX_SPEED;
+    }
+    if (
+      action === "fast" &&
+      (numericValue < MIN_SPEED || numericValue > MAX_SPEED)
+    ) {
+      return "must be between " + MIN_SPEED + " and " + MAX_SPEED;
+    }
+    if (
+      (action === "rewind" || action === "advance") &&
+      numericValue < 0
+    ) {
+      return "must be zero or greater";
+    }
+    if (
+      (action === "louder" || action === "softer") &&
+      (numericValue <= 0 || numericValue > 1)
+    ) {
+      return "must be greater than 0 and no more than 1";
+    }
+    return null;
+  }
+
+  function sanitizeActionValue(action, value, fallback) {
+    if (!getActionValueError(action, value)) return Number(value);
+    if (!getActionValueError(action, fallback)) return Number(fallback);
+    if (Object.prototype.hasOwnProperty.call(defaultActionValues, action)) {
+      return defaultActionValues[action];
+    }
+    return 0;
+  }
+
   return {
+    MAX_SPEED: MAX_SPEED,
+    MIN_SPEED: MIN_SPEED,
+    getActionValueError: getActionValueError,
     getLegacyKeyCode: getLegacyKeyCode,
     inferBindingCode: inferBindingCode,
     legacyBindingKeyToCode: legacyBindingKeyToCode,
     legacyKeyCodeToCode: legacyKeyCodeToCode,
-    normalizeBindingKey: normalizeBindingKey
+    normalizeBindingKey: normalizeBindingKey,
+    sanitizeActionValue: sanitizeActionValue
   };
 });
