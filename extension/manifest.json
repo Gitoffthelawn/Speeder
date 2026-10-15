@@ -1,7 +1,7 @@
 {
   "name": "Speeder",
   "short_name": "Speeder",
-  "version": "6.0.9.1",
+  "version": "6.0.10.0",
   "manifest_version": 2,
   "description": "Speed up, slow down, advance and rewind HTML5 audio/video with shortcuts (New and improved version of \"Video Speed Controller\")",
   "homepage_url": "https://github.com/SoPat712/speeder",
@@ -27,8 +27,7 @@
   },
   "permissions": [
     "activeTab",
-    "storage",
-    "https://cdn.jsdelivr.net/*"
+    "storage"
   ],
   "options_ui": {
     "page": "options/options.html",

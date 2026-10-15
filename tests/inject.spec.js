@@ -32,6 +32,7 @@ function bootInject(options) {
 
   evaluateScript("extension/shared/controller-utils.js");
   evaluateScript("extension/shared/key-bindings.js");
+  evaluateScript("extension/shared/settings-core.js");
   evaluateScript("extension/shared/site-rules.js");
   evaluateScript("extension/shared/ui-icons.js");
   evaluateScript("extension/content/inject.js");

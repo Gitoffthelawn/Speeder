@@ -37,9 +37,27 @@
     }
   }
 
+  function hasChallengeResource(node) {
+    if (!node) return false;
+    if (
+      (node.nodeName === "SCRIPT" || node.nodeName === "IFRAME") &&
+      isChallengeUrl(node.src)
+    ) {
+      return true;
+    }
+    if (!node.firstElementChild || typeof node.querySelectorAll !== "function") {
+      return false;
+    }
+    var resources = node.querySelectorAll("script[src], iframe[src]");
+    for (var i = 0; i < resources.length; i++) {
+      if (isChallengeUrl(resources[i].src)) return true;
+    }
+    return false;
+  }
+
   // Challenge pages inspect native APIs. Leave the page untouched, including
   // bridge flags and readiness events, even if the manifest was bypassed.
-  if (isChallengeDocument(window)) return;
+  if (isChallengeDocument(window) || hasChallengeResource(document)) return;
 
   function dispatchBridgeEvent(eventName) {
     try {
@@ -65,6 +83,35 @@
   }
 
   window.__speederPageShadowBridgeInstalled = true;
+  var attachShadowDescriptor = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "attachShadow"
+  );
+  var wrappedAttachShadow = null;
+  var historyWrappers = {};
+  var navigation = null;
+
+  function restorePageHooks() {
+    if (wrappedAttachShadow && Element.prototype.attachShadow === wrappedAttachShadow) {
+      Object.defineProperty(Element.prototype, "attachShadow", attachShadowDescriptor);
+    }
+    Object.keys(historyWrappers).forEach(function(method) {
+      var entry = historyWrappers[method];
+      if (history[method] !== entry.wrapper) return;
+      if (entry.descriptor) {
+        Object.defineProperty(history, method, entry.descriptor);
+      } else {
+        delete history[method];
+      }
+    });
+    if (navigation && typeof navigation.removeEventListener === "function") {
+      navigation.removeEventListener("currententrychange", notifyLocationChanged);
+    }
+    delete window.__speederPageShadowBridgeInstalled;
+    delete window.__speederPageNavigationApiBridgeInstalled;
+    document.removeEventListener("speeder-restore-page-hooks", restorePageHooks, true);
+  }
+  document.addEventListener("speeder-restore-page-hooks", restorePageHooks, true);
 
   function notifyLocationChanged() {
     try {
@@ -82,11 +129,13 @@
     typeof Element.prototype.attachShadow === "function"
   ) {
     var originalAttachShadow = Element.prototype.attachShadow;
-    Element.prototype.attachShadow = function() {
+    wrappedAttachShadow = function() {
       var shadowRoot = originalAttachShadow.apply(this, arguments);
       try {
-        this.dispatchEvent(
-          new Event("speeder-shadow-root-attached", {
+        (this.isConnected ? this : document).dispatchEvent(
+          new Event(this.isConnected
+            ? "speeder-shadow-root-attached"
+            : "speeder-detached-shadow-root-attached", {
             bubbles: true,
             composed: true
           })
@@ -94,6 +143,7 @@
       } catch (_error) {}
       return shadowRoot;
     };
+    Element.prototype.attachShadow = wrappedAttachShadow;
   }
 
   ["pushState", "replaceState"].forEach(function(method) {
@@ -101,11 +151,14 @@
       return;
     }
     var original = history[method];
-    history[method] = function() {
+    var descriptor = Object.getOwnPropertyDescriptor(history, method);
+    var wrapper = function() {
       var result = original.apply(this, arguments);
       notifyLocationChanged();
       return result;
     };
+    historyWrappers[method] = { wrapper: wrapper, descriptor: descriptor };
+    history[method] = wrapper;
   });
 
   // Modern Navigation API entries cover same-document navigations that do not
@@ -120,6 +173,7 @@
         "currententrychange",
         notifyLocationChanged
       );
+      navigation = window.navigation;
       window.__speederPageNavigationApiBridgeInstalled = true;
     } catch (_error) {}
   }

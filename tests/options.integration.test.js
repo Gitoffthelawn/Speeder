@@ -14,6 +14,7 @@ async function setupOptions(overrides = {}) {
   loadScript("extension/shared/controller-utils.js");
   loadScript("extension/shared/key-bindings.js");
   loadScript("extension/shared/settings-core.js");
+  loadScript("extension/shared/site-rules.js");
   loadScript("extension/shared/popup-controls.js");
   loadScript("extension/shared/ui-icons.js");
   loadScript("extension/options/lucide-client.js");

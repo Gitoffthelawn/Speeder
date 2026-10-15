@@ -1,9 +1,9 @@
-var regStrip = /^[\r\t\f\v ]+|[\r\t\f\v ]+$/gm;
 var speederShared =
   typeof SpeederShared === "object" && SpeederShared ? SpeederShared : {};
 var controllerUtils = speederShared.controllerUtils || {};
 var keyBindingUtils = speederShared.keyBindings || {};
 var popupControlUtils = speederShared.popupControls || {};
+var siteRuleUtils = speederShared.siteRules || {};
 
 var keyBindings = [];
 
@@ -51,19 +51,6 @@ var modifierKeys = new Set([
   "OS",
   "Shift"
 ]);
-
-var controllerLocations = Array.isArray(controllerUtils.controllerLocations)
-  ? controllerUtils.controllerLocations.slice()
-  : [
-    "top-left",
-    "top-center",
-    "top-right",
-    "middle-right",
-    "bottom-right",
-    "bottom-center",
-    "bottom-left",
-    "middle-left"
-  ];
 
 var controllerButtonDefs = {
   rewind:   { icon: "\u00AB", name: "Rewind" },
@@ -215,28 +202,7 @@ function persistManagedSyncSettings(settings, callback, existingStorage) {
       completeSettings
     );
 
-    function removeStaleKeys() {
-      if (!mutation.remove.length) {
-        callback(null);
-        return;
-      }
-      chrome.storage.sync.remove(mutation.remove, function () {
-        callback(chrome.runtime.lastError || null);
-      });
-    }
-
-    if (Object.keys(mutation.set).length === 0) {
-      removeStaleKeys();
-      return;
-    }
-
-    chrome.storage.sync.set(mutation.set, function () {
-      if (chrome.runtime.lastError) {
-        callback(chrome.runtime.lastError);
-        return;
-      }
-      removeStaleKeys();
-    });
+    vscWriteManagedStorageMutation(mutation, callback);
   }
 
   if (existingStorage && typeof existingStorage === "object") {
@@ -504,22 +470,6 @@ function syncSiteRuleField(ruleEl, rule, key, isCheckbox) {
   else input.value = value;
 }
 
-function normalizeBindingKey(key) {
-  return keyBindingUtils.normalizeBindingKey(key);
-}
-
-function getLegacyKeyCode(binding) {
-  return keyBindingUtils.getLegacyKeyCode(binding);
-}
-
-function legacyBindingKeyToCode(key) {
-  return keyBindingUtils.legacyBindingKeyToCode(key);
-}
-
-function legacyKeyCodeToCode(keyCode) {
-  return keyBindingUtils.legacyKeyCodeToCode(keyCode);
-}
-
 function inferBindingCode(binding, fallbackCode) {
   return keyBindingUtils.inferBindingCode(binding, fallbackCode);
 }
@@ -663,15 +613,6 @@ function updateCustomShortcutInputText(inputItem, bindingOrKeyCode) {
   );
 }
 
-function appendSelectOptions(select, options) {
-  options.forEach(function (optionData) {
-    var option = document.createElement("option");
-    option.value = optionData.value;
-    option.textContent = optionData.label;
-    select.appendChild(option);
-  });
-}
-
 function labelShortcutRow(row) {
   if (!row) return;
   var action = row.dataset.action;
@@ -802,20 +743,10 @@ function validate() {
   
   // Validate site rules patterns
   document.querySelectorAll(".site-rule").forEach((ruleEl) => {
-    var pattern = ruleEl.querySelector(".site-pattern").value.trim();
-    if (pattern.length === 0) return;
-    
-    if (pattern.startsWith("/")) {
-      try {
-        var lastSlash = pattern.lastIndexOf("/");
-        if (lastSlash === 0) throw new Error("Missing closing slash");
-        new RegExp(pattern.substring(1, lastSlash), pattern.substring(lastSlash + 1));
-      } catch (err) {
-        status.textContent =
-          "Error: Invalid site rule regex: " + pattern + ". Unable to save";
-        valid = false;
-        return;
-      }
+    var result = updateSiteRulePatternFeedback(ruleEl);
+    if (!result.valid) {
+      status.textContent = "Error: " + result.error + " Unable to save";
+      valid = false;
     }
   });
   
@@ -866,11 +797,8 @@ function save_options(isAutoSave) {
   settings.hideWithControlsTimer =
     Math.min(15, Math.max(0.1, parseFloat(document.getElementById("hideWithControlsTimer").value) || tcDefaults.hideWithControlsTimer));
 
-  // Sync back to the legacy key if it exists, for backward compatibility
+  // Keep the in-memory legacy alias aligned; storage diffs omit it.
   settings.hideWithYouTubeControls = settings.hideWithControls;
-
-  if (settings.hideWithControlsTimer < 0.1) settings.hideWithControlsTimer = 0.1;
-  if (settings.hideWithControlsTimer > 15) settings.hideWithControlsTimer = 15;
 
   settings.controllerLocation = normalizeControllerLocation(
     document.getElementById("controllerLocation").value
@@ -1214,6 +1142,22 @@ function addSiteRuleShortcut(rowsEl, action, binding, value, force) {
 
 var siteRuleControlId = 0;
 
+function updateSiteRulePatternFeedback(ruleEl) {
+  var input = ruleEl.querySelector(".site-pattern");
+  var feedback = ruleEl.querySelector(".site-pattern-feedback");
+  // Empty rows are ignored when saving, as they are when adding a new rule.
+  var result = input.value.trim().length === 0
+    ? { valid: true, error: "", warning: "" }
+    : siteRuleUtils.validateSiteRulePattern(input.value);
+  input.setAttribute("aria-invalid", result.valid ? "false" : "true");
+  if (feedback) {
+    feedback.textContent = result.error || result.warning;
+    feedback.hidden = !feedback.textContent;
+    feedback.classList.toggle("site-pattern-error", !result.valid);
+  }
+  return result;
+}
+
 function associateSiteRuleLabels(ruleEl) {
   ruleEl.querySelectorAll(".site-rule-option").forEach(function(option) {
     var label = Array.from(option.children).find(function(child) {
@@ -1248,7 +1192,17 @@ function createSiteRule(rule) {
   ruleEl.vscOriginalRule = vscClonePlainData(rule) || {};
 
   var pattern = rule && rule.pattern ? rule.pattern : "";
-  ruleEl.querySelector(".site-pattern").value = pattern;
+  var patternInput = ruleEl.querySelector(".site-pattern");
+  patternInput.value = pattern;
+  var patternFeedback = ruleEl.querySelector(".site-pattern-feedback");
+  if (patternFeedback) {
+    patternFeedback.id = "site-pattern-feedback-" + ++siteRuleControlId;
+    patternInput.setAttribute("aria-describedby", patternFeedback.id);
+  }
+  patternInput.addEventListener("input", function() {
+    updateSiteRulePatternFeedback(ruleEl);
+  });
+  updateSiteRulePatternFeedback(ruleEl);
   ruleEl.querySelector(".site-title").value =
     rule && typeof rule.title === "string" ? rule.title : "";
 
@@ -1480,7 +1434,7 @@ function populateControlBarZones(activeZone, availableZone, activeIds, allowButt
     if (block) activeZone.appendChild(block);
   });
 
-  Object.keys(controllerButtonDefs).forEach(function (id) {
+  vscGetButtonIds().forEach(function (id) {
     if (!allowed(id)) return;
     if (!activeIds.includes(id)) {
       var block = createControlBarBlock(id);
@@ -1680,6 +1634,7 @@ function repaintAllCbIconsFromCustomMap() {
 }
 
 function persistCustomButtonIcons(map, callback) {
+  map = vscNormalizeLocalSettings({ customButtonIcons: map }).customButtonIcons;
   chrome.storage.local.set({ customButtonIcons: map }, function () {
     if (chrome.runtime.lastError) {
       setLucideStatus(
@@ -1704,7 +1659,7 @@ function initLucideButtonIconsUI() {
   if (!actionSel.dataset.lucideInit) {
     actionSel.dataset.lucideInit = "1";
     vscClearElement(actionSel);
-    Object.keys(controllerButtonDefs).forEach(function (aid) {
+    vscGetButtonIds().forEach(function (aid) {
       if (aid === "nudge") {
         Object.keys(lucideSubtitleNudgeActionLabels).forEach(function (subId) {
           var o2 = document.createElement("option");
@@ -1890,13 +1845,9 @@ function restore_options(callback) {
     var storage = vscExpandStoredSettings(rawStorage || {});
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
       var localError = chrome.runtime.lastError;
-      customButtonIconsLive =
-        !localError &&
-        loc &&
-        loc.customButtonIcons &&
-        typeof loc.customButtonIcons === "object"
-          ? loc.customButtonIcons
-          : {};
+      customButtonIconsLive = vscNormalizeLocalSettings({
+        customButtonIcons: !localError && loc ? loc.customButtonIcons || {} : {}
+      }).customButtonIcons;
 
     document.getElementById("rememberSpeed").checked = storage.rememberSpeed;
     document.getElementById("forceLastSavedSpeed").checked =

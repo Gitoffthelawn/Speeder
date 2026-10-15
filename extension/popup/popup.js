@@ -25,7 +25,7 @@ document.addEventListener("DOMContentLoaded", function () {
     settings: { label: "", className: "" }
   };
 
-  var defaultButtons = ["rewind", "slower", "faster", "advance", "display"];
+  var defaultButtons = vscGetDefaultButtonIds();
   var popupExcludedButtonIds = new Set(["settings"]);
   var renderToken = 0;
   var forceLastSavedSpeedControlledBySiteRule = null;
@@ -90,28 +90,7 @@ document.addEventListener("DOMContentLoaded", function () {
   function persistExpandedSettings(rawStorage, settings, callback) {
     var mutation = vscBuildManagedStorageMutation(rawStorage, settings);
 
-    function removeStaleKeys() {
-      if (!mutation.remove.length) {
-        callback(null);
-        return;
-      }
-      chrome.storage.sync.remove(mutation.remove, function () {
-        callback(chrome.runtime.lastError || null);
-      });
-    }
-
-    if (!Object.keys(mutation.set).length) {
-      removeStaleKeys();
-      return;
-    }
-
-    chrome.storage.sync.set(mutation.set, function () {
-      if (chrome.runtime.lastError) {
-        callback(chrome.runtime.lastError);
-        return;
-      }
-      removeStaleKeys();
-    });
+    vscWriteManagedStorageMutation(mutation, callback);
   }
 
   function updateStoredSettings(update, callback) {
@@ -550,10 +529,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
       if (currentRenderToken !== renderToken) return;
-      var customIconsMap =
-        loc && loc.customButtonIcons && typeof loc.customButtonIcons === "object"
-          ? loc.customButtonIcons
-          : {};
+      var customIconsMap = vscNormalizeLocalSettings({
+        customButtonIcons: loc && loc.customButtonIcons || {}
+      }).customButtonIcons;
 
       chrome.storage.sync.get(null, function (rawStorage) {
         if (currentRenderToken !== renderToken) return;

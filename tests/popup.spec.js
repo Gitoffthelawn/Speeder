@@ -182,6 +182,9 @@ describe("popup.js", () => {
             preferred: true,
             diagnostics: {
               mediaType: "video",
+              pageHooks: { installed: true, suspended: false },
+              controllers: [{ insideFullscreen: true, popoverOpen: false,
+                geometryHidden: false, autohide: false, idleHidden: false, hidden: false }],
               fullscreen: { active: true, element: "div", ownsMedia: true },
               controller: { present: true, hidden: false }
             }
@@ -207,6 +210,9 @@ describe("popup.js", () => {
       hostname: "video.example"
     });
     expect(report.frame.mediaType).toBe("video");
+    expect(report.frame.pageHooks).toEqual({ installed: true, suspended: false });
+    expect(report.frame.controllers).toEqual([{ insideFullscreen: true, popoverOpen: false,
+      geometryHidden: false, autohide: false, idleHidden: false, hidden: false }]);
     expect(reportText).not.toContain("private_token");
     expect(reportText).not.toContain("secret");
     expect(document.querySelector("#status").textContent).toContain("copied");

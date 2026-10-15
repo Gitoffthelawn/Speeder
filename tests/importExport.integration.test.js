@@ -12,6 +12,7 @@ async function setupImportExport(overrides = {}) {
   const restoreSpy = vi.fn();
   globalThis.restore_options = restoreSpy;
   window.restore_options = restoreSpy;
+  loadScript("extension/shared/ui-icons.js");
   loadScript("extension/shared/settings-core.js");
   loadScript("extension/shared/import-export.js");
   loadScript("extension/options/import-export.js");
@@ -194,7 +195,7 @@ describe("import/export flows", () => {
           {
             __text: JSON.stringify({
               settings: { rememberSpeed: true },
-              localSettings: { customButtonIcons: { faster: { slug: "rocket" } } }
+              localSettings: { customButtonIcons: { faster: { slug: "rocket", svg: "<svg/>" } } }
             })
           }
         ]
@@ -202,7 +203,7 @@ describe("import/export flows", () => {
     });
 
     expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      { customButtonIcons: { faster: { slug: "rocket" } } },
+      { customButtonIcons: { faster: { slug: "rocket", svg: "<svg/>" } } },
       expect.any(Function)
     );
     expect(chrome.storage.sync.clear).not.toHaveBeenCalled();

@@ -51,6 +51,7 @@ function bootImportExport(options) {
   });
   global.URL = window.URL;
 
+  evaluateScript("extension/shared/ui-icons.js");
   evaluateScript("extension/shared/settings-core.js");
   evaluateScript("extension/shared/import-export.js");
   evaluateScript("extension/options/import-export.js");

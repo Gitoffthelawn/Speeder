@@ -1,3 +1,4 @@
+/* Host rules also live in shadow.css for hosts mounted inside shadow roots. */
 /* Base styles for the controller wrapper (the shadow host) */
 .vsc-controller {
   position: absolute !important;

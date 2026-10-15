@@ -1534,7 +1534,7 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(wrapper.shadowRoot.vscRateListenerAttached).not.toBe(true);
   });
 
-  it("does not observe unrelated src attributes across the document", async () => {
+  it("ignores image src changes without checking URLs or scanning descendants", async () => {
     bootInject();
     await settleLifecycle();
 
@@ -1542,8 +1542,13 @@ describe("inject.js media/controller lifecycle regressions", () => {
     document.body.appendChild(image);
     await settleLifecycle();
 
-    image.src = "https://example.org/poster.jpg";
-    expect(document.vscMutationObserver.takeRecords()).toHaveLength(0);
+    const urlSpy = vi.spyOn(window, "isChallengeUrl");
+    const querySpy = vi.spyOn(image, "querySelectorAll");
+    image.src = "https://challenges.cloudflare.com/poster.jpg";
+    await settleLifecycle();
+    expect(urlSpy).not.toHaveBeenCalled();
+    expect(querySpy).not.toHaveBeenCalled();
+    expect(window.vscPageHooksSuspended).toBe(false);
   });
 
   it("still detects a source that receives its src after insertion", async () => {
@@ -1712,8 +1717,8 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(window.vscLocationWatchTimer).not.toBeNull();
 
     const shadowCatchupSpy = vi.spyOn(window, "rescanOpenShadowRoots");
-    document.dispatchEvent(new Event("speeder-page-navigation-api-ready"));
-    document.dispatchEvent(new Event("speeder-page-bridge-ready"));
+    window.navigation = new window.EventTarget();
+    evaluateScript("extension/content/shadow-bridge.js");
     bridge.dispatchEvent(new Event("load"));
 
     expect(shadowCatchupSpy).toHaveBeenCalledTimes(1);
@@ -1763,7 +1768,7 @@ describe("inject.js media/controller lifecycle regressions", () => {
     vi.useFakeTimers();
     bootInject();
     await settleLifecycle();
-    document.dispatchEvent(new Event("speeder-page-bridge-ready"));
+    evaluateScript("extension/content/shadow-bridge.js");
 
     const mount = document.createElement("div");
     const video = document.createElement("video");
@@ -2349,4 +2354,844 @@ describe("inject.js media/controller lifecycle regressions", () => {
 
     expect(audio.vsc).toBeUndefined();
   });
+  it.each([
+    ["script", "https://challenges.cloudflare.com/turnstile/v0/api.js"],
+    ["script", "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x"],
+    ["iframe", "https://challenges.cloudflare.com/widget"]
+  ])("restores page hooks for a later %s challenge resource and retains controls", async (tag, src) => {
+    vi.useFakeTimers();
+    let descriptor;
+    bootInject({ configureWindow(win) {
+      descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow");
+      win.navigation = new win.EventTarget();
+    } });
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+    expect(window.vscLocationWatchTimer).toBeNull();
+    const container = document.createElement("section");
+    const resource = document.createElement(tag);
+    resource.src = src;
+    container.appendChild(resource);
+    document.body.appendChild(container);
+    await Promise.resolve();
+    expect(window.Element.prototype.attachShadow).toBe(descriptor.value);
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    expect(window.history.hasOwnProperty("replaceState")).toBe(false);
+    expect(Object.keys(window).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+    expect(window.vscPageHooksSuspended).toBe(true);
+    expect(window.vscLocationWatchTimer).toBeTruthy();
+    expect(window.vscBoundedShadowFallbackTimers).toHaveLength(3);
+    const { video, wrapper } = createControlledVideo();
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true, code: "KeyD", key: "d"
+    }));
+    expect(video.playbackRate).toBe(1.1);
+    expect(wrapper.isConnected).toBe(true);
+    const snapshot = window.eval(readWorkspaceFile("extension/content/frame-speed-snapshot.js"));
+    expect(snapshot.speed).toBe(1.1);
+    expect(snapshot.frameToken).toBe(window.tc.frameToken);
+    expect(snapshot.diagnostics.pageHooks).toEqual({ installed: false, suspended: true, reason: "challenge" });
+    resource.remove();
+    window.installPageShadowBridge();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(window.Element.prototype.attachShadow).toBe(descriptor.value);
+    expect(window.__speederPageShadowBridgeInstalled).toBeUndefined();
+    window.history.pushState({}, "", "/suspended-route");
+    await vi.advanceTimersByTimeAsync(1400);
+    expect(window.tc.siteRuleAppliedHref).toBe(window.location.href);
+  });
+
+  it.each([
+    ["early", "script", "/cdn-cgi/challenge-platform/h/b/orchestrate/x.js"],
+    ["runtime", "script", "/cdn-cgi/challenge-platform/h/b/orchestrate/x.js"],
+    ["early", "iframe", "https://challenges.cloudflare.com/widget"],
+    ["runtime", "iframe", "https://challenges.cloudflare.com/widget"]
+  ])("restores hooks for delayed %s %s src assignments", async (phase, tag, src) => {
+    vi.useFakeTimers();
+    let descriptor;
+    bootInject({ syncGetDelayMs: phase === "early" ? 100 : 0, configureWindow(win) {
+      descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow");
+    } });
+    if (phase === "runtime") await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    const resource = document.createElement(tag);
+    document.body.appendChild(resource);
+    await settleLifecycle();
+    resource.src = src;
+    await Promise.resolve();
+    expect(window.vscPageHooksSuspended).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    expect(Object.getOwnPropertyNames(window).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+  });
+
+  it("keeps hooks installed for a non-challenge script src change", async () => {
+    bootInject();
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    const script = document.createElement("script");
+    document.head.appendChild(script);
+    await settleLifecycle();
+    script.src = "/ordinary-loader.js";
+    await settleLifecycle();
+    expect(window.vscPageHooksSuspended).toBe(false);
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+  });
+
+  it.each(["site", "global"])("restores hooks after %s disable hydrates and reinstalls once on storage enable", async (kind) => {
+    vi.useFakeTimers();
+    let descriptor;
+    const chrome = bootInject({
+      syncGetDelayMs: 100,
+      syncData: kind === "site" ? { siteRules: [{ pattern: "example.org", enabled: false }] } : { enabled: false },
+      configureWindow(win) { descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow"); }
+    });
+    evaluateScript("extension/content/shadow-bridge.js");
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+    await vi.advanceTimersByTimeAsync(110);
+    await settleLifecycle();
+    expect(window.vscPageHooksInactive).toBe(true);
+    expect(window.vscPageHooksSuspended).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    expect(Object.getOwnPropertyNames(window).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+    expect(window.vscPageShadowBridgeRequested).toBe(false);
+
+    const host = document.createElement("disabled-player");
+    document.body.appendChild(host);
+    await settleLifecycle();
+    const root = host.attachShadow({ mode: "closed" });
+    Object.defineProperty(host, "openOrClosedShadowRoot", { value: root });
+    const video = document.createElement("video");
+    video.src = "https://example.org/disabled.mp4";
+    root.appendChild(video);
+    await settleLifecycle();
+    expect(video.vsc).toBeUndefined();
+    expect(window.getDiagnosticsSnapshot(video).pageHooks).toEqual({ installed: false, suspended: true, reason: "inactive" });
+    const append = vi.spyOn(document.documentElement, "appendChild");
+    chrome.storage.sync.set(kind === "site" ? { siteRules: [] } : { enabled: true });
+    await vi.advanceTimersByTimeAsync(200);
+    await settleLifecycle();
+    window.isSpeederActiveForCurrentPage();
+    window.isSpeederActiveForCurrentPage();
+    await settleLifecycle();
+    expect(append.mock.calls.filter(([node]) => node.src && node.src.endsWith("content/shadow-bridge.js"))).toHaveLength(1);
+    expect(window.vscPageHooksInactive).toBe(false);
+    expect(video.vsc.div.getRootNode()).toBe(root);
+    evaluateScript("extension/content/shadow-bridge.js");
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+    expect(window.getDiagnosticsSnapshot(video).pageHooks).toEqual({ installed: true, suspended: false, reason: null });
+    // A second cycle must capture fresh descriptors and fully restore again.
+    chrome.storage.sync.set({ enabled: false });
+    await vi.advanceTimersByTimeAsync(200);
+    await settleLifecycle();
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    expect(Object.getOwnPropertyNames(window).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+  });
+
+  it("follows whitelisted SPA routes in both directions while global settings are disabled", async () => {
+    vi.useFakeTimers();
+    let descriptor;
+    bootInject({ path: "/disabled", syncData: { enabled: false, siteRules: [
+      { pattern: "example.org/enabled", enabled: true }
+    ] }, configureWindow(win) { descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow"); } });
+    await settleLifecycle();
+    expect(window.vscPageHooksInactive).toBe(true);
+    window.history.pushState({}, "", "/enabled");
+    await vi.advanceTimersByTimeAsync(1400);
+    await settleLifecycle();
+    expect(window.vscPageHooksInactive).toBe(false);
+    evaluateScript("extension/content/shadow-bridge.js");
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+    window.history.pushState({}, "", "/disabled");
+    await vi.advanceTimersByTimeAsync(350);
+    await settleLifecycle();
+    expect(window.vscPageHooksInactive).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    expect(Object.getOwnPropertyNames(window).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+  });
+
+  it("follows URL hook activity while a hydrated page has no body", async () => {
+    vi.useFakeTimers();
+    let descriptor;
+    bootInject({ path: "/enabled", syncData: { enabled: false, siteRules: [
+      { pattern: "example.org/enabled", enabled: true }
+    ] }, configureWindow(win) { descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow"); } });
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    const body = document.body;
+    body.remove();
+    try {
+      window.history.pushState({}, "", "/disabled");
+      await vi.advanceTimersByTimeAsync(350);
+      await settleLifecycle();
+      expect(window.vscPageHooksInactive).toBe(true);
+      expect(window.__speederPageShadowBridgeInstalled).toBeUndefined();
+      expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+      window.history.pushState({}, "", "/enabled");
+      await vi.advanceTimersByTimeAsync(1400);
+      await settleLifecycle();
+      expect(window.vscPageHooksInactive).toBe(false);
+      expect(window.vscPageShadowBridgeRequested).toBe(true);
+      evaluateScript("extension/content/shadow-bridge.js");
+      expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+    } finally {
+      document.documentElement.appendChild(body);
+    }
+  });
+
+  it.each(["load", "error"])("ignores a restored bridge's stale %s callback after reactivation", async (eventName) => {
+    vi.useFakeTimers();
+    const chrome = bootInject({ syncData: { enabled: false } });
+    const oldBridge = window.vscPageShadowBridgeScript;
+    await settleLifecycle();
+    expect(oldBridge.isConnected).toBe(false);
+    chrome.storage.sync.set({ enabled: true });
+    await vi.advanceTimersByTimeAsync(100);
+    await settleLifecycle();
+    const newBridge = window.vscPageShadowBridgeScript;
+    expect(newBridge).not.toBe(oldBridge);
+    expect(newBridge.isConnected).toBe(true);
+    oldBridge.dispatchEvent(new Event(eventName));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(window.vscPageShadowBridgeRequested).toBe(true);
+    expect(window.vscPageShadowBridgeRetries).toBe(0);
+    expect(window.vscPageShadowBridgeScript).toBe(newBridge);
+  });
+
+  it("keeps hooks installed during tab pause", async () => {
+    const chrome = bootInject();
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    const attach = window.Element.prototype.attachShadow;
+    chrome.runtime.onMessage.listeners[0]({ action: "set_tab_paused", paused: true }, {}, vi.fn());
+    window.isSpeederActiveForCurrentPage();
+    await settleLifecycle();
+    expect(window.tc.tabPaused).toBe(true);
+    expect(window.vscPageHooksInactive).toBe(false);
+    expect(window.Element.prototype.attachShadow).toBe(attach);
+    expect(window.__speederPageShadowBridgeInstalled).toBe(true);
+  });
+
+  it("never reinstalls challenge-suspended hooks when storage enables the page", async () => {
+    vi.useFakeTimers();
+    const chrome = bootInject({ syncData: { enabled: false } });
+    await settleLifecycle();
+    const resource = document.createElement("script");
+    document.head.appendChild(resource);
+    await settleLifecycle();
+    resource.src = "/cdn-cgi/challenge-platform/h/b/orchestrate/x.js";
+    await settleLifecycle();
+    resource.remove();
+    chrome.storage.sync.set({ enabled: true });
+    await vi.advanceTimersByTimeAsync(100);
+    await settleLifecycle();
+    expect(window.vscPageHooksSuspended).toBe(true);
+    expect(window.__speederPageShadowBridgeInstalled).toBeUndefined();
+    expect(document.querySelector('script[src$="content/shadow-bridge.js"]')).toBeNull();
+  });
+
+  it("suspends before hydration and prevents a pending bridge from installing", async () => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    bootInject({ syncGetDelayMs: 100, configureWindow(win) {
+      nativeAttach = win.Element.prototype.attachShadow;
+    } });
+    const resource = document.createElement("script");
+    resource.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    document.head.appendChild(resource);
+    await Promise.resolve();
+    evaluateScript("extension/content/shadow-bridge.js");
+    expect(window.Element.prototype.attachShadow).toBe(nativeAttach);
+    expect(window.__speederPageShadowBridgeInstalled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(120);
+    await settleLifecycle();
+    expect(createControlledVideo().video.vsc).toBeDefined();
+  });
+
+  it("restarts bounded shadow catch-up when a never-ready bridge is suspended late", async () => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    bootInject({ configureWindow(win) { nativeAttach = win.Element.prototype.attachShadow; } });
+    await settleLifecycle();
+    await vi.advanceTimersByTimeAsync(31000);
+    const resource = document.createElement("script");
+    resource.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    document.head.appendChild(resource);
+    await Promise.resolve();
+    const container = document.createElement("section");
+    const host = document.createElement("fallback-player");
+    const root = nativeAttach.call(host, { mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/fallback.mp4";
+    root.appendChild(video);
+    container.appendChild(host);
+    document.body.appendChild(container);
+    await vi.advanceTimersByTimeAsync(3100);
+    await settleLifecycle();
+    expect(video.vsc.div.getRootNode()).toBe(root);
+  });
+
+  it("skips hooks for resources present at content startup but keeps media discovery", async () => {
+    let descriptor;
+    bootInject({ configureWindow(win) {
+      descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow");
+      const resource = win.document.createElement("script");
+      resource.src = "/cdn-cgi/challenge-platform/start";
+      win.document.head.appendChild(resource);
+    } });
+    await settleLifecycle();
+    expect(window.vscPageHooksSuspended).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(window.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(document.querySelector('script[src$="shadow-bridge.js"]')).toBeNull();
+    expect(createControlledVideo().video.vsc).toBeDefined();
+  });
+
+  it.each(["open", "closed"])("discovers nested page roots behind an %s ancestor", async (outerMode) => {
+    let pageAttach;
+    const rootListeners = new WeakMap();
+    bootInject({ configureWindow(win) {
+      const nativeAttach = win.Element.prototype.attachShadow;
+      pageAttach = function(options) {
+        const root = nativeAttach.call(this, options);
+        rootListeners.set(root, vi.spyOn(root, "addEventListener"));
+        Object.defineProperty(this, "openOrClosedShadowRoot", { value: root });
+        return root;
+      };
+      win.Element.prototype.attachShadow = pageAttach;
+    } });
+    await settleLifecycle();
+    // Model page-world calls that bypass the content-world patch.
+    window.Element.prototype.attachShadow = pageAttach;
+    evaluateScript("extension/content/shadow-bridge.js");
+    const outer = document.createElement("outer-player");
+    document.body.appendChild(outer);
+    const outerRoot = outer.attachShadow({ mode: outerMode });
+    const addListener = rootListeners.get(outerRoot);
+    window.observeRoot(outerRoot);
+    window.observeRoot(outerRoot);
+    expect(addListener.mock.calls.filter(([type]) => type === "speeder-shadow-root-attached")).toHaveLength(1);
+    expect(window.vscShadowBridgeListenerRoots.has(outerRoot)).toBe(true);
+    const inner = document.createElement("inner-player");
+    outerRoot.appendChild(inner);
+    await settleLifecycle();
+    const innerRoot = inner.attachShadow({ mode: "closed" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/nested.mp4";
+    innerRoot.appendChild(video);
+    await settleLifecycle();
+    expect(inner.shadowRoot).toBeNull();
+    expect(innerRoot.vscMutationObserverAttached).toBe(true);
+    expect(video.vsc.div.getRootNode()).toBe(innerRoot);
+    outer.remove();
+    await settleLifecycle();
+    expect(window.vscShadowBridgeListenerRoots.has(outerRoot)).toBe(false);
+    document.body.appendChild(outer);
+    await settleLifecycle();
+    expect(window.vscShadowBridgeListenerRoots.has(outerRoot)).toBe(true);
+    expect(addListener.mock.calls.filter(([type]) => type === "speeder-shadow-root-attached")).toHaveLength(2);
+  });
+
+  it("uses detached-root signals to scan only later inserted subtrees after bridge catch-up ends", async () => {
+    vi.useFakeTimers();
+    let pageAttach;
+    bootInject({ configureWindow(win) { pageAttach = win.Element.prototype.attachShadow; } });
+    await settleLifecycle();
+    window.Element.prototype.attachShadow = pageAttach;
+    evaluateScript("extension/content/shadow-bridge.js");
+    await vi.advanceTimersByTimeAsync(31000);
+    const container = document.createElement("section");
+    const intermediate = document.createElement("div");
+    const host = document.createElement("detached-player");
+    const root = host.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/detached.mp4";
+    root.appendChild(video);
+    intermediate.appendChild(host);
+    container.appendChild(intermediate);
+    expect(root.vscMutationObserverAttached).not.toBe(true);
+    // Unrelated insertions must not consume the pending detached-root signal.
+    document.body.appendChild(document.createElement("aside"));
+    await settleLifecycle();
+    await vi.advanceTimersByTimeAsync(31000);
+    const walker = vi.spyOn(document, "createTreeWalker");
+    document.body.appendChild(container);
+    await settleLifecycle();
+    expect(video.vsc.div.getRootNode()).toBe(root);
+    expect(walker.mock.calls.some(([node]) => node === container)).toBe(true);
+    expect(walker.mock.calls.some(([node]) => node === document || node === document.body)).toBe(false);
+  });
+
+  it("resolves nested shadow fullscreen down to the direct video", async () => {
+    bootInject();
+    await settleLifecycle();
+    const outer = document.createElement("outer-fullscreen");
+    const outerRoot = outer.attachShadow({ mode: "open" });
+    const inner = document.createElement("inner-fullscreen");
+    const innerRoot = inner.attachShadow({ mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/fullscreen.mp4";
+    innerRoot.appendChild(video);
+    outerRoot.appendChild(inner);
+    document.body.appendChild(outer);
+    [outer, inner, video].forEach((node) => setRect(node, makeRect(0, 0, 640, 360)));
+    window.ensureController(video, innerRoot);
+    video.vsc.div.showPopover = vi.fn();
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: outer });
+    Object.defineProperty(outerRoot, "fullscreenElement", { configurable: true, value: inner });
+    Object.defineProperty(innerRoot, "fullscreenElement", { configurable: true, value: video });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(window.getFullscreenElement(document)).toBe(video);
+    expect(video.vsc.div.showPopover).toHaveBeenCalled();
+  });
+
+  it("follows assigned slots and deep composed ancestors without looping", async () => {
+    bootInject();
+    await settleLifecycle();
+    const host = document.createElement("slotted-player");
+    const root = host.attachShadow({ mode: "open" });
+    const boundary = document.createElement("div");
+    const slot = document.createElement("slot");
+    const video = document.createElement("video");
+    video.src = "https://example.org/slotted.mp4";
+    boundary.appendChild(slot);
+    root.appendChild(boundary);
+    host.appendChild(video);
+    document.body.appendChild(host);
+    [host, boundary, video].forEach((node) => setRect(node, makeRect(0, 0, 640, 360)));
+    window.ensureController(video, host);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: host });
+    Object.defineProperty(root, "fullscreenElement", { configurable: true, value: boundary });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(video.assignedSlot).toBe(slot);
+    expect(window.isComposedDescendant(video, boundary)).toBe(true);
+    expect(video.vsc.div.parentNode).toBe(boundary);
+    let deep = video;
+    for (let i = 0; i < 35; i++) {
+      const child = document.createElement("div");
+      deep.appendChild(child);
+      deep = child;
+    }
+    expect(window.isComposedDescendant(deep, boundary)).toBe(true);
+    const cycle = document.createElement("div");
+    Object.defineProperty(cycle, "assignedSlot", { value: cycle });
+    expect(window.isComposedDescendant(cycle, boundary)).toBe(false);
+  });
+
+  it("reopens externally closed popovers while direct-video fullscreen remains active", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+    const { video, wrapper } = createControlledVideo();
+    let open = false;
+    const matches = wrapper.matches.bind(wrapper);
+    wrapper.matches = (selector) => selector === ":popover-open" ? open : matches(selector);
+    wrapper.showPopover = vi.fn(() => { open = true; });
+    wrapper.hidePopover = vi.fn(() => { open = false; });
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: video });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(open).toBe(true);
+    open = false;
+    window.syncControllerFullscreenMount(video.vsc);
+    expect(open).toBe(true);
+    open = false;
+    const toggle = new Event("toggle");
+    Object.defineProperty(toggle, "newState", { value: "closed" });
+    wrapper.dispatchEvent(toggle);
+    await settleLifecycle();
+    expect(open).toBe(true);
+    expect(wrapper.showPopover).toHaveBeenCalledTimes(3);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(open).toBe(false);
+    expect(wrapper.showPopover).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["fullscreenchange", "webkitfullscreenchange", "mozfullscreenchange", "MSFullscreenChange", "resize"])(
+    "recovers after more than two seconds of zero geometry on %s", async (type) => {
+      vi.useFakeTimers();
+      bootInject();
+      await settleLifecycle();
+      const { video, mount, wrapper } = createControlledVideo();
+      setRect(video, makeRect(0, 0, 0, 0));
+      setRect(mount, makeRect(0, 0, 0, 0));
+      video.vsc.controllerHostSchedule();
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(hostIsGeometrySuppressed(wrapper)).toBe(true);
+      if (type !== "resize") {
+        Object.defineProperty(document, "fullscreenElement", { configurable: true, value: mount });
+      }
+      (type === "resize" ? window : document).dispatchEvent(new Event(type));
+      await vi.advanceTimersByTimeAsync(2300);
+      expect(hostIsGeometrySuppressed(wrapper)).toBe(true);
+      setRect(video, makeRect(0, 0, 800, 450));
+      setRect(mount, makeRect(0, 0, 800, 450));
+      setBoxMetrics(mount, 800, 450);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(hostIsGeometrySuppressed(wrapper)).toBe(false);
+      expect(wrapper.style.display).not.toBe("none");
+      expect(wrapper.style.width).toBe("800px");
+    }
+  );
+
+  it("coalesces fullscreen settle work, repairs late moves, and cancels timers on removal", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+    const { video, wrapper, controller, mount } = createControlledVideo();
+    const boundary = document.createElement("section");
+    boundary.appendChild(mount);
+    document.body.appendChild(boundary);
+    setRect(boundary, makeRect(0, 0, 800, 450));
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: boundary });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    const previousTimers = controller.fullscreenSettleTimers.slice();
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(controller.fullscreenSettleTimers).toHaveLength(4);
+    expect(controller.fullscreenSettleTimers).not.toEqual(previousTimers);
+    document.body.appendChild(wrapper);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(window.isComposedDescendant(wrapper, boundary)).toBe(true);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(wrapper.parentNode).toBe(controller.normalControllerMount);
+    window.removeController(video);
+    expect(controller.fullscreenSettleTimers).toEqual([]);
+    expect(controller.fullscreenSettleFrame).toBeNull();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(wrapper.isConnected).toBe(false);
+  });
+
+  it("clears stale YouTube visibility state at fullscreen and retargets a replaced SPA player", async () => {
+    vi.useFakeTimers();
+    bootInject({ url: "https://www.youtube.com/watch?v=test", syncData: { hideWithControls: true } });
+    await settleLifecycle();
+    const oldPlayer = document.createElement("div");
+    oldPlayer.className = "html5-video-player";
+    const { video, wrapper, controller } = createControlledVideo({ mount: oldPlayer });
+    oldPlayer.classList.add("ytp-autohide");
+    await settleLifecycle();
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+    oldPlayer.classList.remove("ytp-autohide");
+    wrapper.classList.add("vsc-idle-hidden", "vsc-hidden", "vsc-show", "vsc-forced-show");
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: oldPlayer });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(false);
+    expect(wrapper.classList.contains("vsc-idle-hidden")).toBe(false);
+    for (const cls of ["vsc-hidden", "vsc-show", "vsc-forced-show"]) expect(wrapper.classList.contains(cls)).toBe(true);
+    const newPlayer = document.createElement("div");
+    newPlayer.className = "html5-video-player";
+    setRect(newPlayer, makeRect(0, 0, 640, 360));
+    newPlayer.appendChild(video);
+    document.body.appendChild(newPlayer);
+    oldPlayer.remove();
+    document.dispatchEvent(new Event("yt-navigate-finish"));
+    await vi.advanceTimersByTimeAsync(350);
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: newPlayer });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(video.vsc).toBe(controller);
+    expect(controller.youTubeAutoHidePlayer).toBe(newPlayer);
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(false);
+    oldPlayer.classList.add("ytp-autohide");
+    await settleLifecycle();
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(false);
+    newPlayer.classList.add("ytp-autohide");
+    await settleLifecycle();
+    expect(wrapper.classList.contains("ytp-autohide")).toBe(true);
+  });
+
+  it.each(["fullscreenchange", "resize"])("preserves manual placement through %s settling", async (type) => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+    const { mount, controller } = createControlledVideo();
+    const element = window.convertControllerToManualPosition(controller);
+    element.style.left = "99px";
+    element.style.top = "123px";
+    if (type === "fullscreenchange") {
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: mount });
+    }
+    (type === "resize" ? window : document).dispatchEvent(new Event(type));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(element.dataset.positionMode).toBe("manual");
+    expect(element.style.left).toBe("99px");
+    expect(element.style.top).toBe("123px");
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(element.dataset.positionMode).toBe("manual");
+    expect(element.style.left).toBe("99px");
+    expect(element.style.top).toBe("123px");
+  });
+
+  it("preserves a drag started during the fullscreen settle sequence", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+    const { mount, controller } = createControlledVideo();
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: mount });
+    document.dispatchEvent(new Event("fullscreenchange"));
+    await vi.advanceTimersByTimeAsync(200);
+    const element = window.convertControllerToManualPosition(controller);
+    element.style.left = "111px";
+    element.style.top = "222px";
+    await vi.advanceTimersByTimeAsync(1800);
+    expect(element.dataset.positionMode).toBe("manual");
+    expect(element.style.left).toBe("111px");
+    expect(element.style.top).toBe("222px");
+  });
+
+  it("reports privacy-safe hook, fullscreen, mount and visibility diagnostics for every controller", async () => {
+    bootInject();
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    const first = createControlledVideo({ src: "https://example.org/private-video?token=secret" });
+    const second = createControlledVideo();
+    first.wrapper.classList.add("vsc-hidden", "ytp-autohide", "vsc-idle-hidden");
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, value: first.mount });
+    const report = window.getDiagnosticsSnapshot(first.video);
+    expect(report.pageHooks).toEqual({ installed: true, suspended: false, reason: null });
+    expect(report.controllers).toHaveLength(2);
+    expect(report.controller).toMatchObject({ fullscreenActive: true, insideFullscreen: true,
+      normalMount: true, popoverOpen: false, hidden: true, autohide: true, idleHidden: true });
+    expect(JSON.stringify(report)).not.toMatch(/private-video|secret|https:/);
+    window.suspendPageHooks();
+    expect(window.getDiagnosticsSnapshot(second.video).pageHooks).toEqual({ installed: false, suspended: true, reason: "challenge" });
+  });
+
+  it("leaves isolated-world history untouched and keeps hash/popstate navigation listeners", async () => {
+    vi.useFakeTimers();
+    let pushState;
+    let replaceState;
+    bootInject({ configureWindow(win) {
+      pushState = win.history.pushState;
+      replaceState = win.history.replaceState;
+    } });
+    await settleLifecycle();
+    expect(window.history.pushState).toBe(pushState);
+    expect(window.history.replaceState).toBe(replaceState);
+    expect(window.history.hasOwnProperty("pushState")).toBe(false);
+    window.history.pushState({}, "", "/pop-route");
+    window.dispatchEvent(new Event("popstate"));
+    await vi.advanceTimersByTimeAsync(350);
+    expect(window.tc.siteRuleAppliedHref).toBe(window.location.href);
+    window.location.hash = "next";
+    await vi.advanceTimersByTimeAsync(350);
+    expect(window.tc.siteRuleAppliedHref).toBe(window.location.href);
+  });
+
+  it.each([
+    ["suspended", "open"],
+    ["suspended", "closed"],
+    ["failed", "open"],
+    ["failed", "closed"]
+  ])("discovers late %s-hook shadow players in inserted subtrees (%s root)", async (state, mode) => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    bootInject({ configureWindow(win) { nativeAttach = win.Element.prototype.attachShadow; } });
+    await settleLifecycle();
+    if (state === "suspended") {
+      evaluateScript("extension/content/shadow-bridge.js");
+      const resource = document.createElement("script");
+      resource.src = "/cdn-cgi/challenge-platform/scripts/jsd/main.js";
+      document.head.appendChild(resource);
+      await Promise.resolve();
+      expect(window.vscPageHooksSuspended).toBe(true);
+    } else {
+      document.querySelector('script[src$="shadow-bridge.js"]').dispatchEvent(new Event("error"));
+      expect(window.vscPageShadowBridgeRetries).toBeGreaterThan(0);
+    }
+    await vi.advanceTimersByTimeAsync(31000);
+    const container = document.createElement("div");
+    const host = document.createElement("late-component-player");
+    const root = nativeAttach.call(host, { mode });
+    if (mode === "closed") {
+      Object.defineProperty(host, "openOrClosedShadowRoot", { value: root });
+      expect(host.shadowRoot).toBeNull();
+    }
+    const video = document.createElement("video");
+    video.src = "https://example.org/late-shadow.mp4";
+    root.appendChild(video);
+    container.appendChild(host);
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    document.body.appendChild(container);
+    await settleLifecycle();
+    expect(video.vsc.div.getRootNode()).toBe(root);
+    expect(scan.mock.calls.some(([node]) => node === container)).toBe(true);
+    expect(scan.mock.calls.some(([node]) => node === document || node === document.body)).toBe(false);
+  });
+
+  it("does not walk inserted subtrees or rescan on empty shortcuts with an active bridge", async () => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    bootInject({ configureWindow(win) { nativeAttach = win.Element.prototype.attachShadow; },
+      syncData: { keyBindings: [{ action: "faster", code: "KeyD", value: 0.1, force: true }] }
+    });
+    await settleLifecycle();
+    evaluateScript("extension/content/shadow-bridge.js");
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(window.vscPageShadowBridgeLoaded).toBe(true);
+    expect(window.vscDetachedShadowPending).toBe(0);
+    const container = document.createElement("div");
+    const host = document.createElement("bridged-component-player");
+    // Bypass both wrappers so the test isolates the insertion fallback.
+    nativeAttach.call(host, { mode: "open" });
+    container.appendChild(host);
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    const walker = vi.spyOn(document, "createTreeWalker");
+    document.body.appendChild(container);
+    await settleLifecycle();
+    const shortcut = new KeyboardEvent("keydown", {
+      bubbles: true, cancelable: true, code: "KeyD", key: "d"
+    });
+    document.dispatchEvent(shortcut);
+    expect(scan).not.toHaveBeenCalled();
+    expect(walker).not.toHaveBeenCalled();
+    expect(shortcut.defaultPrevented).toBe(false);
+  });
+
+  it.each(["open", "closed"])("recovers missed %s shadow media on a suspended-page shortcut", async (mode) => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    bootInject({ configureWindow(win) { nativeAttach = win.Element.prototype.attachShadow; } });
+    await settleLifecycle();
+    window.suspendPageHooks();
+    await vi.advanceTimersByTimeAsync(31000);
+    const host = document.createElement("missed-shortcut-player");
+    document.body.appendChild(host);
+    await settleLifecycle();
+    // Attaching a root to an already-connected host causes no light-DOM mutation.
+    const root = nativeAttach.call(host, { mode });
+    if (mode === "closed") Object.defineProperty(host, "openOrClosedShadowRoot", { value: root });
+    const video = document.createElement("video");
+    video.src = "https://example.org/missed-shortcut.mp4";
+    root.appendChild(video);
+    await settleLifecycle();
+    expect(window.tc.mediaElements).toHaveLength(0);
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyD", key: "d" }));
+    expect(video.vsc.div.getRootNode()).toBe(root);
+    expect(video.playbackRate).toBe(1.1);
+    expect(scan.mock.calls.filter(([node]) => node === document)).toHaveLength(1);
+  });
+
+  it.each(["run_action", "get_speed", "set_force_last_saved_speed"])("recovers missed shadow media on %s messages", async (action) => {
+    vi.useFakeTimers();
+    let nativeAttach;
+    const chrome = bootInject({ configureWindow(win) { nativeAttach = win.Element.prototype.attachShadow; } });
+    await settleLifecycle();
+    window.suspendPageHooks();
+    await vi.advanceTimersByTimeAsync(31000);
+    const host = document.createElement("missed-popup-player");
+    document.body.appendChild(host);
+    await settleLifecycle();
+    const root = nativeAttach.call(host, { mode: "open" });
+    const video = document.createElement("video");
+    video.src = "https://example.org/missed-popup.mp4";
+    root.appendChild(video);
+    await settleLifecycle();
+    expect(video.vsc).toBeUndefined();
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    const targets = vi.spyOn(window, "resolveActionMediaTargets");
+    const response = vi.fn();
+    chrome.runtime.onMessage.listeners[0]({
+      action, actionName: "faster", value: 0.1, enabled: false,
+      targetFrameToken: window.tc.frameToken
+    }, {}, response);
+    expect(video.vsc.div.getRootNode()).toBe(root);
+    expect(response).toHaveBeenCalledOnce();
+    expect(response.mock.calls[0][0].speed).toBe(action === "run_action" ? 1.1 : 1);
+    expect(scan.mock.calls.filter(([node]) => node === document)).toHaveLength(1);
+    if (action === "run_action") {
+      // The speed change also resolves its existing, video-specific blink action.
+      expect(targets.mock.calls.filter(([, specificVideo]) => !specificVideo)).toHaveLength(2);
+    }
+  });
+
+  it("shares the two-second empty-media rescan throttle across shortcuts and runtime messages", async () => {
+    vi.useFakeTimers();
+    const chrome = bootInject();
+    await settleLifecycle();
+    window.suspendPageHooks();
+    await vi.advanceTimersByTimeAsync(31000);
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    const response = vi.fn();
+    const message = chrome.runtime.onMessage.listeners[0];
+    const shortcut = () => document.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true, code: "KeyD", key: "d"
+    }));
+    shortcut();
+    message({ action: "get_speed" }, {}, response);
+    message({ action: "run_action", actionName: "faster", value: 0.1 }, {}, response);
+    expect(scan.mock.calls.filter(([node]) => node === document)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1999);
+    shortcut();
+    expect(scan.mock.calls.filter(([node]) => node === document)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    message({ action: "get_speed" }, {}, response);
+    expect(scan.mock.calls.filter(([node]) => node === document)).toHaveLength(2);
+    expect(response).not.toHaveBeenCalled();
+  });
+
+  it("preserves existing-media targeting without an on-demand scan while hooks are suspended", async () => {
+    vi.useFakeTimers();
+    const chrome = bootInject();
+    await settleLifecycle();
+    window.suspendPageHooks();
+    const { video } = createControlledVideo();
+    await settleLifecycle();
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyD", key: "d" }));
+    const response = vi.fn();
+    chrome.runtime.onMessage.listeners[0]({ action: "get_speed" }, {}, response);
+    expect(video.playbackRate).toBe(1.1);
+    expect(response.mock.calls[0][0].speed).toBe(1.1);
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("does not rescan for unrelated, disabled, modified or editable shortcuts or wrong-frame actions", async () => {
+    vi.useFakeTimers();
+    const chrome = bootInject({ syncData: { keyBindings: [
+      { action: "faster", code: "KeyD", value: 0.1 },
+      { action: "slower", code: "KeyS", value: 0.1, disabled: true }
+    ] } });
+    await settleLifecycle();
+    window.suspendPageHooks();
+    await vi.advanceTimersByTimeAsync(31000);
+    const scan = vi.spyOn(window, "rescanOpenShadowRoots");
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyQ", key: "q" }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyS", key: "s" }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyD", key: "d", ctrlKey: true }));
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyD", key: "d" }));
+    chrome.runtime.onMessage.listeners[0]({
+      action: "run_action", actionName: "faster", targetFrameToken: "another-frame"
+    }, {}, vi.fn());
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("keeps challenge mutation checks constant-time for non-elements and childless elements", async () => {
+    vi.useFakeTimers();
+    bootInject();
+    await settleLifecycle();
+    const text = document.createTextNode("ordinary text");
+    const comment = document.createComment("ordinary comment");
+    const leaf = document.createElement("span");
+    const query = vi.spyOn(leaf, "querySelectorAll");
+    const resourceCheck = vi.spyOn(window, "hasChallengeResource");
+    document.body.append(text, comment, leaf);
+    // Check only the synchronous mutation callback, before idle media discovery.
+    await Promise.resolve();
+    expect(resourceCheck).not.toHaveBeenCalledWith(text);
+    expect(resourceCheck).not.toHaveBeenCalledWith(comment);
+    expect(resourceCheck).toHaveBeenCalledWith(leaf);
+    expect(query).not.toHaveBeenCalled();
+  });
+
 });
