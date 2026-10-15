@@ -27,8 +27,7 @@
   },
   "permissions": [
     "activeTab",
-    "storage",
-    "https://cdn.jsdelivr.net/*"
+    "storage"
   ],
   "options_ui": {
     "page": "options/options.html",

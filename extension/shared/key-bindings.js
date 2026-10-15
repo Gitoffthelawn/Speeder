@@ -1,5 +1,6 @@
 (function(root, factory) {
-  var exports = factory();
+  if (typeof module === "object" && module.exports) require("./settings-core.js");
+  var exports = factory(root);
 
   if (typeof module === "object" && module.exports) {
     module.exports = exports;
@@ -7,7 +8,7 @@
 
   root.SpeederShared = root.SpeederShared || {};
   root.SpeederShared.keyBindings = exports;
-})(typeof globalThis !== "undefined" ? globalThis : this, function() {
+})(typeof globalThis !== "undefined" ? globalThis : this, function(root) {
   var MIN_SPEED = 0.1;
   var MAX_SPEED = 16;
 
@@ -59,39 +60,7 @@
 
   function legacyKeyCodeToCode(keyCode) {
     if (!Number.isInteger(keyCode)) return null;
-    if (keyCode >= 48 && keyCode <= 57) return "Digit" + String.fromCharCode(keyCode);
-    if (keyCode >= 65 && keyCode <= 90) return "Key" + String.fromCharCode(keyCode);
-    if (keyCode >= 96 && keyCode <= 105) return "Numpad" + (keyCode - 96);
-    if (keyCode >= 112 && keyCode <= 123) return "F" + (keyCode - 111);
-
-    var keyCodeMap = {
-      32: "Space",
-      37: "ArrowLeft",
-      38: "ArrowUp",
-      39: "ArrowRight",
-      40: "ArrowDown",
-      106: "NumpadMultiply",
-      107: "NumpadAdd",
-      109: "NumpadSubtract",
-      110: "NumpadDecimal",
-      111: "NumpadDivide",
-      186: "Semicolon",
-      188: "Comma",
-      189: "Minus",
-      187: "Equal",
-      190: "Period",
-      191: "Slash",
-      192: "Backquote",
-      219: "BracketLeft",
-      220: "Backslash",
-      221: "BracketRight",
-      222: "Quote",
-      59: "Semicolon",
-      61: "Equal",
-      173: "Minus"
-    };
-
-    return keyCodeMap[keyCode] || null;
+    return root.vscLegacyKeyCodeToCode(keyCode);
   }
 
   function inferBindingCode(binding, fallbackCode) {
@@ -115,53 +84,12 @@
       : null;
   }
 
-  var defaultActionValues = {
-    slower: 0.1,
-    faster: 0.1,
-    rewind: 10,
-    advance: 10,
-    fast: 1.8,
-    louder: 0.1,
-    softer: 0.1
-  };
-
   function getActionValueError(action, value) {
-    var numericValue = Number(value);
-    if (!Number.isFinite(numericValue)) return "must be a finite number";
-    if (
-      (action === "slower" || action === "faster") &&
-      (numericValue <= 0 || numericValue > MAX_SPEED)
-    ) {
-      return "must be greater than 0 and no more than " + MAX_SPEED;
-    }
-    if (
-      action === "fast" &&
-      (numericValue < MIN_SPEED || numericValue > MAX_SPEED)
-    ) {
-      return "must be between " + MIN_SPEED + " and " + MAX_SPEED;
-    }
-    if (
-      (action === "rewind" || action === "advance") &&
-      numericValue < 0
-    ) {
-      return "must be zero or greater";
-    }
-    if (
-      (action === "louder" || action === "softer") &&
-      (numericValue <= 0 || numericValue > 1)
-    ) {
-      return "must be greater than 0 and no more than 1";
-    }
-    return null;
+    return root.vscGetActionValueError(action, value);
   }
 
   function sanitizeActionValue(action, value, fallback) {
-    if (!getActionValueError(action, value)) return Number(value);
-    if (!getActionValueError(action, fallback)) return Number(fallback);
-    if (Object.prototype.hasOwnProperty.call(defaultActionValues, action)) {
-      return defaultActionValues[action];
-    }
-    return 0;
+    return root.vscSanitizeActionValue(action, value, fallback);
   }
 
   return {

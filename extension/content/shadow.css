@@ -1,3 +1,4 @@
+/* Host rules also live in inject.css for hosts mounted in the document. */
 :host {
   position: absolute !important;
   pointer-events: none !important;

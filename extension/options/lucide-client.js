@@ -1,24 +1,41 @@
-/**
- * Lucide static icons via jsDelivr (same registry as lucide.dev).
- * ISC License — https://lucide.dev
- */
+/** Bundled Lucide static icons. ISC License — see vendor/LICENSE. */
 var LUCIDE_STATIC_VERSION = "1.7.0";
-var LUCIDE_CDN_BASE =
-  "https://cdn.jsdelivr.net/npm/lucide-static@" +
-  LUCIDE_STATIC_VERSION;
-
-var LUCIDE_TAGS_CACHE_KEY = "lucideTagsCacheV1";
-var LUCIDE_TAGS_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7; /* 7 days */
-
-function lucideIconSvgUrl(slug) {
-  if (!slug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(slug)) {
-    return "";
-  }
-  return LUCIDE_CDN_BASE + "/icons/" + slug.toLowerCase() + ".svg";
-}
+var lucideBundle = null;
+var lucideBundlePromise = null;
 
 function lucideTagsJsonUrl() {
-  return LUCIDE_CDN_BASE + "/tags.json";
+  return chrome.runtime.getURL("options/vendor/lucide-icons.json");
+}
+
+function loadLucideBundle() {
+  if (!lucideBundlePromise) {
+    lucideBundlePromise = fetch(lucideTagsJsonUrl(), { cache: "force-cache" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("Could not load bundled icons");
+        return r.json();
+      })
+      .then(function (data) {
+        if (data.version !== LUCIDE_STATIC_VERSION) throw new Error("Lucide version mismatch");
+        lucideBundle = data;
+        return data;
+      })
+      .catch(function (error) {
+        lucideBundlePromise = null;
+        throw error;
+      });
+  }
+  return lucideBundlePromise;
+}
+
+function isLucideSlug(slug) {
+  return typeof slug === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(slug);
+}
+
+function lucideIconSvgUrl(slug) {
+  if (!isLucideSlug(slug) || !lucideBundle) return "";
+  var svg = Object.prototype.hasOwnProperty.call(lucideBundle.icons, slug.toLowerCase())
+    ? lucideBundle.icons[slug.toLowerCase()] : null;
+  return svg ? "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg) : "";
 }
 
 /** Collapse whitespace for smaller storage. */
@@ -27,15 +44,8 @@ function lucideMinifySvg(s) {
 }
 
 function sanitizeLucideSvg(svgText) {
-  if (!svgText || typeof svgText !== "string") return null;
-  var t = String(svgText).replace(/\0/g, "").trim();
-  if (!/<svg[\s>]/i.test(t)) return null;
-  var doc = new DOMParser().parseFromString(t, "image/svg+xml");
-  if (doc.querySelector("parsererror")) return null;
-  var svg = vscSanitizeSvgTree(doc.querySelector("svg"));
+  var svg = vscParseSvg(svgText);
   if (!svg) return null;
-  svg.removeAttribute("width");
-  svg.removeAttribute("height");
   svg.setAttribute("width", "100%");
   svg.setAttribute("height", "100%");
   svg.setAttribute("aria-hidden", "true");
@@ -43,76 +53,19 @@ function sanitizeLucideSvg(svgText) {
 }
 
 function fetchLucideSvg(slug) {
-  var url = lucideIconSvgUrl(slug);
-  if (!url) {
-    return Promise.reject(new Error("Invalid icon name"));
-  }
-  return fetch(url, { cache: "force-cache" }).then(function (r) {
-    if (!r.ok) {
-      throw new Error("Icon not found: " + slug);
-    }
-    return r.text();
+  if (!isLucideSlug(slug)) return Promise.reject(new Error("Invalid icon name"));
+  return loadLucideBundle().then(function (data) {
+    var svg = Object.prototype.hasOwnProperty.call(data.icons, slug.toLowerCase())
+      ? data.icons[slug.toLowerCase()] : null;
+    if (!svg) throw new Error("Icon not found: " + slug);
+    return svg;
   });
-}
-
-function fetchAndCacheLucideTags(chromeLocal, resolve, reject) {
-  fetch(lucideTagsJsonUrl(), { cache: "force-cache" })
-    .then(function (r) {
-      if (!r.ok) throw new Error("tags.json HTTP " + r.status);
-      return r.json();
-    })
-    .then(function (obj) {
-      var payload = {};
-      payload[LUCIDE_TAGS_CACHE_KEY] = obj;
-      payload[LUCIDE_TAGS_CACHE_KEY + "At"] = Date.now();
-      if (chromeLocal && chromeLocal.set) {
-        chromeLocal.set(payload, function () {
-          resolve(obj);
-        });
-      } else {
-        resolve(obj);
-      }
-    })
-    .catch(reject);
 }
 
 /** @returns {Promise<Object<string, string[]>>} slug -> tags */
 function getLucideTagsMap(chromeLocal, bypassCache) {
-  return new Promise(function (resolve, reject) {
-    if (!chromeLocal || !chromeLocal.get) {
-      fetch(lucideTagsJsonUrl(), { cache: "force-cache" })
-        .then(function (r) {
-          return r.json();
-        })
-        .then(resolve)
-        .catch(reject);
-      return;
-    }
-    if (bypassCache) {
-      fetchAndCacheLucideTags(chromeLocal, resolve, reject);
-      return;
-    }
-    chromeLocal.get(
-      [LUCIDE_TAGS_CACHE_KEY, LUCIDE_TAGS_CACHE_KEY + "At"],
-      function (stored) {
-        if (chrome.runtime.lastError) {
-          fetchAndCacheLucideTags(chromeLocal, resolve, reject);
-          return;
-        }
-        var data = stored[LUCIDE_TAGS_CACHE_KEY];
-        var at = stored[LUCIDE_TAGS_CACHE_KEY + "At"];
-        if (
-          data &&
-          typeof data === "object" &&
-          at &&
-          Date.now() - at < LUCIDE_TAGS_MAX_AGE_MS
-        ) {
-          resolve(data);
-          return;
-        }
-        fetchAndCacheLucideTags(chromeLocal, resolve, reject);
-      }
-    );
+  return loadLucideBundle().then(function (data) {
+    return data.tags;
   });
 }
 

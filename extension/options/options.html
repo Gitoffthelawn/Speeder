@@ -8,6 +8,7 @@
     <script src="../shared/controller-utils.js"></script>
     <script src="../shared/key-bindings.js"></script>
     <script src="../shared/settings-core.js"></script>
+    <script src="../shared/site-rules.js"></script>
     <script src="../shared/popup-controls.js"></script>
     <script src="../shared/ui-icons.js"></script>
     <script src="lucide-client.js"></script>
@@ -546,7 +547,7 @@
                     rel="noopener noreferrer"
                     >Lucide</a
                   >
-                  set (fetched from jsDelivr). Custom icons are cached in local
+                  set (bundled with Speeder). Custom icons are cached in local
                   storage and included when you export settings. Subtitle nudge
                   icons use two menu entries (enabled and disabled), not the bar
                   block id
@@ -667,6 +668,7 @@
                   placeholder="e.g., youtube.com or /regex/gi"
                   aria-label="Site rule URL pattern"
                 />
+                <p class="site-pattern-feedback" role="status" hidden></p>
               </div>
               <button type="button" class="remove-site-rule">Remove</button>
             </div>

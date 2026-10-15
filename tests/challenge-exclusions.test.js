@@ -236,3 +236,73 @@ describe("challenge page bridge guard", () => {
     expect(original.navigationListener).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe("challenge resource startup guards", () => {
+  function extractGuard(source, name) {
+    const lines = source.split("\n");
+    const start = lines.findIndex((line) => line.includes("function " + name + "("));
+    const indent = lines[start].match(/^ */)[0];
+    const end = lines.findIndex((line, index) => index > start && line === indent + "}");
+    return lines.slice(start, end + 1).map((line) => line.slice(indent.length)).join("\n");
+  }
+
+  it("keeps self-contained challenge guards textually identical", () => {
+    const snapshotSource = readWorkspaceFile("extension/content/frame-speed-snapshot.js");
+    for (const name of ["isChallengeUrl", "isChallengeDocument", "hasChallengeResource"]) {
+      expect(extractGuard(bridgeSource, name)).toBe(extractGuard(injectSource, name));
+      if (name !== "hasChallengeResource") {
+        expect(extractGuard(snapshotSource, name)).toBe(extractGuard(injectSource, name));
+      }
+    }
+  });
+
+  it.each([
+    ["script", "https://challenges.cloudflare.com/turnstile/v0/api.js"],
+    ["script", "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x"],
+    ["iframe", "https://nested.challenges.cloudflare.com/widget"]
+  ])("skips page hooks for an existing %s resource", (tag, src) => {
+    const win = createWindow("https://example.org/watch");
+    const original = observeBridge(win);
+    const resource = win.document.createElement(tag);
+    resource.src = src;
+    win.document.body.appendChild(resource);
+    win.eval(bridgeSource);
+    expect(win.Element.prototype.attachShadow).toBe(original.attachShadow);
+    expect(win.history.hasOwnProperty("pushState")).toBe(false);
+    expect(win.__speederPageShadowBridgeInstalled).toBeUndefined();
+
+  });
+
+  it.each(challengeUrls)("skips snapshot reads in challenge document %s", (url) => {
+    const win = createWindow(url);
+    win.getPrimaryVideoElement = vi.fn(() => { throw new Error("must not read media"); });
+    expect(win.eval(readWorkspaceFile("extension/content/frame-speed-snapshot.js"))).toBeNull();
+    expect(win.getPrimaryVideoElement).not.toHaveBeenCalled();
+  });
+
+  it("restores original descriptors, listeners and flags without overwriting later page methods", () => {
+    const win = createWindow("https://example.org/watch");
+    const descriptor = Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow");
+    const navigation = new win.EventTarget();
+    const remove = vi.spyOn(navigation, "removeEventListener");
+    win.navigation = navigation;
+    win.eval(bridgeSource);
+    const pageReplacement = vi.fn();
+    win.history.replaceState = pageReplacement;
+    const locationChanged = vi.fn();
+    win.document.addEventListener("speeder-location-changed", locationChanged);
+    win.document.dispatchEvent(new win.Event("speeder-restore-page-hooks"));
+    expect(Object.getOwnPropertyDescriptor(win.Element.prototype, "attachShadow")).toEqual(descriptor);
+    expect(win.history.hasOwnProperty("pushState")).toBe(false);
+    expect(win.history.replaceState).toBe(pageReplacement);
+    expect(remove).toHaveBeenCalledWith("currententrychange", expect.any(Function));
+    navigation.dispatchEvent(new win.Event("currententrychange"));
+    expect(locationChanged).not.toHaveBeenCalled();
+    expect(Object.keys(win).filter((key) => key.startsWith("__speeder"))).toEqual([]);
+    const subsequentPush = vi.fn();
+    win.history.pushState = subsequentPush;
+    win.document.dispatchEvent(new win.Event("speeder-restore-page-hooks"));
+    expect(win.history.pushState).toBe(subsequentPush);
+  });
+});

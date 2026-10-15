@@ -8,16 +8,33 @@ describe("lucide-client.js", () => {
     document.body.innerHTML = "";
   });
 
-  it("builds icon URLs and rejects invalid slugs", () => {
+  it("loads the pinned bundle lazily, caches it and never requests a remote URL", async () => {
     loadHtmlString("<!doctype html><html><body></body></html>");
+    const bundle = require("../extension/options/vendor/lucide-icons.json");
+    const pkg = require("../package.json");
+    window.chrome = { runtime: { getURL: (path) => "moz-extension://speeder/" + path } };
+    window.fetch = vi.fn(async () => ({ ok: true, json: async () => bundle }));
     evaluateScript("extension/shared/ui-icons.js");
     evaluateScript("extension/options/lucide-client.js");
-
-    expect(window.lucideIconSvgUrl("alarm-clock")).toContain(
-      "/icons/alarm-clock.svg"
+    expect(window.fetch).not.toHaveBeenCalled();
+    expect(bundle.version).toBe(pkg.devDependencies["lucide-static"]);
+    expect(bundle.version).toBe(window.LUCIDE_STATIC_VERSION);
+    const [tags, svg] = await Promise.all([
+      window.getLucideTagsMap(null, true), window.fetchLucideSvg("Alarm-Clock")
+    ]);
+    expect(tags).toEqual(bundle.tags);
+    expect(svg).toBe(bundle.icons["alarm-clock"]);
+    expect(window.lucideIconSvgUrl("alarm-clock")).toBe(
+      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg)
     );
     expect(window.lucideIconSvgUrl("bad slug!!")).toBe("");
-    expect(window.lucideTagsJsonUrl()).toContain("/tags.json");
+    await expect(window.fetchLucideSvg("../evil")).rejects.toThrow("Invalid icon name");
+    await expect(window.fetchLucideSvg("does-not-exist")).rejects.toThrow("Icon not found");
+    await expect(window.fetchLucideSvg("constructor")).rejects.toThrow("Icon not found");
+    expect(window.lucideIconSvgUrl("constructor")).toBe("");
+    await window.getLucideTagsMap({ get: vi.fn() }, false);
+    expect(window.fetch).toHaveBeenCalledTimes(1);
+    expect(window.fetch.mock.calls[0][0]).toBe("moz-extension://speeder/options/vendor/lucide-icons.json");
   });
 
   it("sanitizes SVG before persisting a Lucide icon", () => {

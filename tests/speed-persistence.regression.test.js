@@ -30,6 +30,8 @@ function bootInject(syncData, url, localData) {
   evaluateScript("extension/shared/site-rules.js");
   evaluateScript("extension/shared/ui-icons.js");
   evaluateScript("extension/content/inject.js");
+  // JSDOM does not fetch the extension's injected page-world bridge.
+  evaluateScript("extension/content/shadow-bridge.js");
   return chrome;
 }
 

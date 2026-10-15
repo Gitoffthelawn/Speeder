@@ -926,6 +926,18 @@ button.lucide-result-tile.lucide-picked {
   font-family: "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
+.site-pattern-feedback {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.site-pattern-feedback.site-pattern-error {
+  color: var(--danger);
+}
+
 .site-rule-body {
   margin-top: 12px;
 }

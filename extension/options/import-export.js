@@ -105,8 +105,8 @@ function exportSettings() {
   });
 }
 
-function persistImportedSyncSettings(currentRaw, importedRaw, callback) {
-  var expanded = vscExpandStoredSettings(importedRaw || {});
+function persistImportedSyncSettings(currentRaw, importedRaw, callback, report) {
+  var expanded = vscExpandStoredSettings(importedRaw || {}, report);
   var mutation = vscBuildManagedStorageMutation(currentRaw || {}, expanded);
 
   if (
@@ -118,39 +118,16 @@ function persistImportedSyncSettings(currentRaw, importedRaw, callback) {
     }
   }
 
-  function removeStaleSettings() {
-    if (!mutation.remove.length) {
-      callback(null);
-      return;
-    }
-    chrome.storage.sync.remove(mutation.remove, function () {
-      callback(chrome.runtime.lastError || null);
-    });
-  }
-
-  if (!Object.keys(mutation.set).length) {
-    removeStaleSettings();
-    return;
-  }
-
-  // Write the replacement first. A failed write must not leave the user with
-  // their old managed settings already deleted.
-  chrome.storage.sync.set(mutation.set, function () {
-    if (chrome.runtime.lastError) {
-      callback(chrome.runtime.lastError);
-      return;
-    }
-    removeStaleSettings();
-  });
+  vscWriteManagedStorageMutation(mutation, callback);
 }
 
-function importLocalSettings(localToImport, callback) {
+function importLocalSettings(localToImport, callback, report) {
   if (localToImport === null) {
     callback(null);
     return;
   }
 
-  var icons = localToImport.customButtonIcons;
+  var icons = vscNormalizeLocalSettings(localToImport, report).customButtonIcons;
   if (icons && typeof icons === "object" && !Array.isArray(icons)) {
     chrome.storage.local.set({ customButtonIcons: icons }, function () {
       callback(chrome.runtime.lastError || null);
@@ -186,6 +163,7 @@ function importSettings() {
 
         var settingsToImport = parsedBackup.settings;
         var localToImport = parsedBackup.localSettings;
+        var importReport = [];
 
         chrome.storage.sync.get(null, function (currentRaw) {
           if (chrome.runtime.lastError) {
@@ -217,11 +195,18 @@ function importSettings() {
                   showStatus(
                     "Settings imported, but custom icons could not be updated - " +
                       localError.message +
+                      (importReport.length ? ". Repaired or dropped: " + importReport.join(", ") : "") +
                       ". Reloading...",
                     true
                   );
                 } else {
-                  showStatus("Settings imported successfully. Reloading...");
+                  showStatus(
+                    importReport.length
+                      ? "Settings imported with repairs or dropped items: " +
+                        importReport.join(", ") + ". Reloading..."
+                      : "Settings imported successfully. Reloading...",
+                    importReport.length > 0
+                  );
                 }
 
                 setTimeout(function () {
@@ -231,8 +216,9 @@ function importSettings() {
                     location.reload();
                   }
                 }, 500);
-              });
-            }
+              }, importReport);
+            },
+            importReport
           );
         });
       } catch (err) {

@@ -321,6 +321,5 @@ module.exports = {
   installCommonWindowMocks,
   loadHtmlFile,
   loadHtmlString,
-  readWorkspaceFile,
-  workspacePath
+  readWorkspaceFile
 };
