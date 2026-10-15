@@ -65,6 +65,24 @@ You can record `Shift+<shortcut>` as a separate, exact binding, or use a site
 rule to block the site from capturing a particular Speeder shortcut. Shift is
 not applied automatically to an unshifted binding.
 
+## Privacy & security
+
+Speeder makes no network requests: icons and other assets are bundled with the
+extension. Settings stay in Firefox extension storage; Firefox manages settings
+sync. External support and documentation links open only when clicked.
+
+On YouTube, Firefox's `wrappedJSObject` lets Speeder call the page player's speed,
+volume, and mute methods so YouTube's native controls stay in sync. Calls pass
+only validated numbers or no arguments, and failures retain the media fallback.
+
+Known Cloudflare challenge documents are excluded. When challenge scripts or
+frames appear on an ordinary page, Speeder suspends its page API hooks and
+restores hooks it still owns. Detection can happen after page startup; it does
+not guarantee compatibility with every challenge page.
+
+Disabling Speeder for a site (or globally) also removes its page API hooks, so a
+disabled page runs without any Speeder changes to page-visible APIs.
+
 ## Development
 
 The unpacked extension root is `extension/`. Load that directory in
@@ -72,6 +90,7 @@ The unpacked extension root is `extension/`. Load that directory in
 
 ```sh
 npm test
+npm run build:lucide # regenerate bundled icons after installing dependencies
 npx --yes web-ext@10.6.0 lint --source-dir extension
 ```
 
