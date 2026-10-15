@@ -1,0 +1,83 @@
+<!doctype html>
+<title>Fullscreen players</title>
+<style>
+  body { margin: 30px; background: #bbb; }
+  .html5-video-player, #outer {
+    position: relative;
+    width: 640px;
+    height: 360px;
+    background: #222;
+  }
+  video { width: 100%; height: 100%; }
+  :fullscreen { width: 100vw !important; height: 100vh !important; }
+</style>
+<body>
+  <div id="outer"></div>
+  <script>
+    window.fixtureRoots = [];
+    window.fixturePlayers = [];
+    const kind = new URL(location).searchParams.get('kind') || 'youtube';
+    const outer = document.getElementById('outer');
+    let mount = outer;
+
+    if (kind === 'youtube') {
+      outer.className = 'html5-video-player';
+      outer.id = 'movie_player';
+      const container = document.createElement('div');
+      container.className = 'html5-video-container';
+      container.style.cssText = 'position:relative;width:100%;height:100%';
+      outer.append(container);
+      mount = container;
+    }
+
+    if (kind === 'closed' || kind === 'nested') {
+      const host = document.createElement('custom-player');
+      host.style.cssText = 'display:block;position:relative;width:100%;height:100%';
+      mount.append(host);
+      const root = host.attachShadow({mode: 'closed'});
+      fixtureRoots.push(root);
+      root.innerHTML = `
+        <style>
+          :host { display: block; width: 100%; height: 100%; }
+          video { width: 100%; height: 100%; }
+          .player { position: relative; width: 100%; height: 100%; }
+          :fullscreen { width: 100vw !important; height: 100vh !important; }
+        </style>
+        <div class="player"></div>`;
+      mount = root.querySelector('.player');
+
+      if (kind === 'nested') {
+        const inner = document.createElement('nested-player');
+        inner.style.cssText = 'display:block;position:relative;width:100%;height:100%';
+        mount.append(inner);
+        const innerRoot = inner.attachShadow({mode: 'closed'});
+        fixtureRoots.push(innerRoot);
+        innerRoot.innerHTML = `
+          <style>
+            video { width: 100%; height: 100%; }
+            .player { position: relative; width: 100%; height: 100%; }
+          </style>
+          <div class="player"></div>`;
+        mount = innerRoot.querySelector('.player');
+      }
+    }
+
+    const video = document.createElement('video');
+    video.src = '/test.mp4';
+    video.controls = true;
+    video.muted = true;
+    video.loop = true;
+    mount.append(video);
+    fixturePlayers.push(video);
+    window.fixtureVideo = video;
+    window.fixtureAncestor = kind === 'youtube' ? outer : mount;
+    document.addEventListener('fullscreenchange', () => {
+      if (new URL(location).searchParams.has('delay')) {
+        setTimeout(() => {
+          video.style.width = '99%';
+          requestAnimationFrame(() => { video.style.width = '100%'; });
+        }, 1000);
+      }
+    });
+  </script>
+</body>

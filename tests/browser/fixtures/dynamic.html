@@ -1,0 +1,12 @@
+<!doctype html>
+<title>Dynamic challenge resource</title>
+<body>
+  Dynamic resource probe
+  <script>
+    setTimeout(() => {
+      const script = document.createElement('script');
+      script.src = '/cdn-cgi/challenge-platform/h/b/orchestrate/x.js';
+      document.head.append(script);
+    }, 1200);
+  </script>
+</body>
