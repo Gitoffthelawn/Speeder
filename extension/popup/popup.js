@@ -1,4 +1,6 @@
 document.addEventListener("DOMContentLoaded", function () {
+  if (window.vscPopupInitialized) return;
+  window.vscPopupInitialized = true;
   var speederShared =
     typeof SpeederShared === "object" && SpeederShared ? SpeederShared : {};
   var siteRuleUtils = speederShared.siteRules || {};
@@ -23,36 +25,72 @@ document.addEventListener("DOMContentLoaded", function () {
     settings: { label: "", className: "" }
   };
 
-  var defaultButtons = ["rewind", "slower", "faster", "advance", "display"];
+  var defaultButtons = vscGetDefaultButtonIds();
   var popupExcludedButtonIds = new Set(["settings"]);
   var renderToken = 0;
   var forceLastSavedSpeedControlledBySiteRule = null;
+  var selectedFrameToken = null;
+  var shortcutTargetMode = "closest";
+  var diagnosticContext = null;
+
+  function updateTabPauseButton(paused) {
+    var button = document.querySelector("#pauseTab");
+    button.setAttribute("aria-pressed", paused ? "true" : "false");
+    button.textContent = paused ? "Resume on this tab" : "Pause on this tab";
+  }
+
+  function getTabPauseState(tab, callback) {
+    if (!tab || !Number.isInteger(tab.id)) {
+      callback(false);
+      return;
+    }
+    chrome.runtime.sendMessage(
+      { action: "get_tab_pause_state", tabId: tab.id },
+      function(response) {
+        callback(
+          !chrome.runtime.lastError && response && response.paused === true
+        );
+      }
+    );
+  }
+
+  function getCurrentSiteRuleDetails(url) {
+    try {
+      var parsed = new URL(url);
+      if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+        !parsed.host
+      ) {
+        return null;
+      }
+      return {
+        title: parsed.host,
+        pattern: parsed.protocol + "//" + parsed.host
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function buildDiagnosticReport() {
+    if (!diagnosticContext) return null;
+    return popupControlUtils.buildDiagnosticReport({
+      speederVersion: chrome.runtime.getManifest().version,
+      browser: navigator.userAgent,
+      platform: navigator.platform || null,
+      url: diagnosticContext.url,
+      storage: diagnosticContext.storage,
+      siteRule: diagnosticContext.siteRule,
+      siteRuleDisabled: isSiteRuleDisabled(diagnosticContext.siteRule),
+      tabPaused: diagnosticContext.tabPaused,
+      frame: diagnosticContext.frame
+    });
+  }
 
   function persistExpandedSettings(rawStorage, settings, callback) {
     var mutation = vscBuildManagedStorageMutation(rawStorage, settings);
 
-    function removeStaleKeys() {
-      if (!mutation.remove.length) {
-        callback(null);
-        return;
-      }
-      chrome.storage.sync.remove(mutation.remove, function () {
-        callback(chrome.runtime.lastError || null);
-      });
-    }
-
-    if (!Object.keys(mutation.set).length) {
-      removeStaleKeys();
-      return;
-    }
-
-    chrome.storage.sync.set(mutation.set, function () {
-      if (chrome.runtime.lastError) {
-        callback(chrome.runtime.lastError);
-        return;
-      }
-      removeStaleKeys();
-    });
+    vscWriteManagedStorageMutation(mutation, callback);
   }
 
   function updateStoredSettings(update, callback) {
@@ -123,16 +161,23 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function getActiveTabContext(callback) {
+    function finish(context) {
+      getTabPauseState(context.tab, function(paused) {
+        context.tabPaused = paused;
+        if (callback) callback(context);
+      });
+    }
+
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
       var activeTab = tabs && tabs[0] ? tabs[0] : null;
       if (!activeTab || !activeTab.id) {
-        if (callback) callback({ tab: null, url: "" });
+        finish({ tab: null, url: "" });
         return;
       }
 
       var tabUrl = typeof activeTab.url === "string" ? activeTab.url : "";
       if (tabUrl.length > 0) {
-        if (callback) callback({ tab: activeTab, url: tabUrl });
+        finish({ tab: activeTab, url: tabUrl });
         return;
       }
 
@@ -141,13 +186,13 @@ document.addEventListener("DOMContentLoaded", function () {
         { action: "get_page_context" },
         function (response) {
           if (chrome.runtime.lastError) {
-            if (callback) callback({ tab: activeTab, url: "" });
+            finish({ tab: activeTab, url: "" });
             return;
           }
 
           var pageUrl =
             response && typeof response.url === "string" ? response.url : "";
-          if (callback) callback({ tab: activeTab, url: pageUrl });
+          finish({ tab: activeTab, url: pageUrl });
         }
       );
     });
@@ -162,6 +207,10 @@ document.addEventListener("DOMContentLoaded", function () {
     if (response && response.speed != null) {
       updateSpeedDisplay(response.speed);
     }
+    selectedFrameToken =
+      response && typeof response.frameToken === "string"
+        ? response.frameToken
+        : null;
   }
 
   function pickBestFrameSpeedResult(results) {
@@ -241,14 +290,19 @@ document.addEventListener("DOMContentLoaded", function () {
       }
       if (def.className) btn.className = def.className;
       btn.title = btnId.charAt(0).toUpperCase() + btnId.slice(1);
+      btn.setAttribute("aria-label", btn.title);
 
       btn.addEventListener("click", function () {
         if (btnId === "settings") {
           window.open(chrome.runtime.getURL("options/options.html"));
           return;
         }
+        var message = { action: "run_action", actionName: btnId };
+        if (shortcutTargetMode !== "all" && selectedFrameToken) {
+          message.targetFrameToken = selectedFrameToken;
+        }
         sendToActiveTab(
-          { action: "run_action", actionName: btnId },
+          message,
           function () {
             querySpeed();
           }
@@ -275,6 +329,104 @@ document.addEventListener("DOMContentLoaded", function () {
 
   document.querySelector("#feedback").addEventListener("click", function () {
     window.open("https://github.com/SoPat712/Speeder/issues");
+  });
+
+  document.querySelector("#copyDiagnostics").addEventListener("click", function () {
+    var report = buildDiagnosticReport();
+    if (!report) {
+      setStatusMessage("Diagnostics are still loading.");
+      return;
+    }
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+      setStatusMessage("Clipboard access is unavailable.");
+      return;
+    }
+    navigator.clipboard.writeText(report).then(
+      function () {
+        setStatusMessage("Diagnostics copied. Review before sharing.");
+      },
+      function () {
+        setStatusMessage("Could not copy diagnostics.");
+      }
+    );
+  });
+
+  document.querySelector("#addSiteRule").addEventListener("click", function () {
+    var details = diagnosticContext
+      ? getCurrentSiteRuleDetails(diagnosticContext.url)
+      : null;
+    if (!details) {
+      setStatusMessage("A site rule cannot be created for this page.");
+      return;
+    }
+    var added = false;
+
+    updateStoredSettings(
+      function (settings) {
+        var rules = Array.isArray(settings.siteRules) ? settings.siteRules : [];
+        if (
+          rules.some(function(rule) {
+            return rule && rule.pattern === details.pattern;
+          })
+        ) {
+          return;
+        }
+        settings.siteRules = rules.concat([
+          {
+            title: details.title,
+            pattern: details.pattern,
+            enabled: true
+          }
+        ]);
+        added = true;
+      },
+      function (error) {
+        if (error) {
+          setStatusMessage("Could not add this site: " + error.message);
+          return;
+        }
+        setStatusMessage(
+          added
+            ? "Site rule added. Opening settings..."
+            : "Site rule already exists. Opening settings..."
+        );
+        window.open(chrome.runtime.getURL("options/options.html"));
+      }
+    );
+  });
+
+  document.querySelector("#pauseTab").addEventListener("click", function () {
+    var tab = diagnosticContext && diagnosticContext.tab;
+    if (!tab || !Number.isInteger(tab.id)) {
+      setStatusMessage("This page cannot be paused.");
+      return;
+    }
+    var button = this;
+    var paused = button.getAttribute("aria-pressed") !== "true";
+    button.disabled = true;
+    chrome.runtime.sendMessage(
+      { action: "set_tab_paused", tabId: tab.id, paused: paused },
+      function(response) {
+        button.disabled = false;
+        if (chrome.runtime.lastError || !response) {
+          setStatusMessage("Could not update this tab.");
+          return;
+        }
+        diagnosticContext.tabPaused = response.paused === true;
+        updateTabPauseButton(diagnosticContext.tabPaused);
+        setControlBarVisible(
+          !diagnosticContext.tabPaused &&
+            diagnosticContext.siteAvailable &&
+            diagnosticContext.showBar
+        );
+        setForceButtonLoading(diagnosticContext.tabPaused);
+        setStatusMessage(
+          diagnosticContext.tabPaused
+            ? "Speeder is paused for this tab."
+            : "Speeder resumed for this tab."
+        );
+      }
+    );
   });
 
   document.querySelector("#donate").addEventListener("click", function () {
@@ -372,14 +524,14 @@ document.addEventListener("DOMContentLoaded", function () {
   function renderForActiveTab() {
     var currentRenderToken = ++renderToken;
     forceLastSavedSpeedControlledBySiteRule = null;
+    selectedFrameToken = null;
     setForceButtonLoading(true);
 
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
       if (currentRenderToken !== renderToken) return;
-      var customIconsMap =
-        loc && loc.customButtonIcons && typeof loc.customButtonIcons === "object"
-          ? loc.customButtonIcons
-          : {};
+      var customIconsMap = vscNormalizeLocalSettings({
+        customButtonIcons: loc && loc.customButtonIcons || {}
+      }).customButtonIcons;
 
       chrome.storage.sync.get(null, function (rawStorage) {
         if (currentRenderToken !== renderToken) return;
@@ -388,6 +540,9 @@ document.addEventListener("DOMContentLoaded", function () {
         getActiveTabContext(function (context) {
           if (currentRenderToken !== renderToken) return;
 
+          var tabPaused = context && context.tabPaused === true;
+          updateTabPauseButton(tabPaused);
+
           var url = context && context.url ? context.url : "";
           var siteRule = matchSiteRule(url, storage.siteRules);
           var siteDisabled = isSiteRuleDisabled(siteRule);
@@ -395,6 +550,10 @@ document.addEventListener("DOMContentLoaded", function () {
             storage.enabled,
             siteRule
           );
+          shortcutTargetMode =
+            siteRule && siteRule.shortcutTargetMode !== undefined
+              ? siteRule.shortcutTargetMode
+              : storage.shortcutTargetMode;
           var showBar = storage.showPopupControlBar !== false;
           forceLastSavedSpeedControlledBySiteRule = Boolean(
             siteRule && siteRule.forceLastSavedSpeed !== undefined
@@ -403,9 +562,22 @@ document.addEventListener("DOMContentLoaded", function () {
             forceLastSavedSpeedControlledBySiteRule
               ? siteRule.forceLastSavedSpeed === true
               : storage.forceLastSavedSpeed === true;
+          diagnosticContext = {
+            tab: context && context.tab,
+            url: url,
+            storage: storage,
+            siteRule: siteRule,
+            frame: null,
+            tabPaused: tabPaused,
+            siteAvailable: siteAvailable,
+            showBar: showBar
+          };
+          document.querySelector("#addSiteRule").disabled =
+            !getCurrentSiteRuleDetails(url);
 
           if (siteRule && siteRule.showPopupControlBar !== undefined) {
             showBar = siteRule.showPopupControlBar;
+            diagnosticContext.showBar = showBar;
           }
 
           toggleEnabledUI(storage.enabled !== false);
@@ -414,7 +586,13 @@ document.addEventListener("DOMContentLoaded", function () {
             resolvePopupButtons(storage, siteRule),
             customIconsMap
           );
-          setControlBarVisible(siteAvailable && showBar);
+          setControlBarVisible(!tabPaused && siteAvailable && showBar);
+
+          if (tabPaused) {
+            setForceButtonLoading(true);
+            setStatusMessage("Speeder is paused for this tab.");
+            return;
+          }
 
           if (siteDisabled) {
             setForceButtonLoading(false);
@@ -427,6 +605,7 @@ document.addEventListener("DOMContentLoaded", function () {
           if (siteAvailable) {
             querySpeed(function(frameContext) {
               if (currentRenderToken !== renderToken) return;
+              diagnosticContext.frame = frameContext || null;
               if (
                 frameContext &&
                 typeof frameContext.forceLastSavedSpeed === "boolean"
@@ -507,20 +686,11 @@ document.addEventListener("DOMContentLoaded", function () {
   function toggleEnabledUI(enabled) {
     document.querySelector("#enable").classList.toggle("hide", enabled);
     document.querySelector("#disable").classList.toggle("hide", !enabled);
-
-    const suffix = `${enabled ? "" : "_disabled"}.png`;
-    chrome.browserAction.setIcon({
-      path: {
-        19: "assets/icons/icon19" + suffix,
-        38: "assets/icons/icon38" + suffix,
-        48: "assets/icons/icon48" + suffix
-      }
-    });
   }
 
   function settingsSavedReloadMessage(enabled) {
     setStatusMessage(
-      `${enabled ? "Enabled" : "Disabled"}. Reload page to see changes`
+      `${enabled ? "Enabled" : "Disabled"}. Open pages update automatically.`
     );
   }
 

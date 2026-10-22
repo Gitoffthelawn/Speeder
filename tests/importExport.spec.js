@@ -51,6 +51,7 @@ function bootImportExport(options) {
   });
   global.URL = window.URL;
 
+  evaluateScript("extension/shared/ui-icons.js");
   evaluateScript("extension/shared/settings-core.js");
   evaluateScript("extension/shared/import-export.js");
   evaluateScript("extension/options/import-export.js");
@@ -70,7 +71,7 @@ describe("options/import-export.js", () => {
   });
 
   it("generates timestamped backup filenames", () => {
-    vi.setSystemTime(new Date("2026-04-04T13:14:15Z"));
+    vi.setSystemTime(new Date(2026, 3, 4, 9, 14, 15));
     bootImportExport();
 
     expect(window.generateBackupFilename()).toBe(
@@ -137,9 +138,14 @@ describe("options/import-export.js", () => {
     expect(backup.localSettings.lucideTagsCacheV1At).toBeUndefined();
   });
 
-  it("imports wrapped backups, restores local data, and refreshes the options page", async () => {
+  it("reports partial success and refreshes when custom icons fail to import", async () => {
     const { chrome } = bootImportExport();
     window.restore_options = vi.fn();
+    chrome.storage.local.set.mockImplementationOnce(function(_items, callback) {
+      chrome.runtime.lastError = { message: "icon quota exceeded" };
+      callback();
+      chrome.runtime.lastError = null;
+    });
 
     const realCreateElement = document.createElement.bind(document);
     const fakeInput = realCreateElement("input");
@@ -196,6 +202,12 @@ describe("options/import-export.js", () => {
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
       { rememberSpeed: true, enabled: false },
       expect.any(Function)
+    );
+    expect(document.querySelector("#status").textContent).toContain(
+      "Settings imported, but custom icons could not be updated"
+    );
+    expect(document.querySelector("#status").textContent).toContain(
+      "icon quota exceeded"
     );
 
     vi.advanceTimersByTime(500);

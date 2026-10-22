@@ -1,4 +1,158 @@
-var isUserSeek = false; // Track if seek was user-initiated
+// Keep in sync with the page-world bridge guard. These checks run before any
+// startup hooks because verification frames inspect native DOM/history APIs.
+function isChallengeUrl(value) {
+  try {
+    var url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    var hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    return (
+      hostname === "challenges.cloudflare.com" ||
+      hostname.endsWith(".challenges.cloudflare.com") ||
+      url.pathname === "/cdn-cgi/challenge-platform" ||
+      url.pathname.indexOf("/cdn-cgi/challenge-platform/") === 0
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isChallengeDocument(win) {
+  try {
+    if (isChallengeUrl(win.location.href)) return true;
+    if (!/^about:(blank|srcdoc)(?:[?#]|$)/i.test(win.location.href)) {
+      return false;
+    }
+    // match_about_blank can inherit a challenge document's eligibility.
+    if (
+      isChallengeUrl(win.document.baseURI) ||
+      isChallengeUrl(win.document.referrer)
+    ) {
+      return true;
+    }
+    return win.parent !== win && isChallengeDocument(win.parent);
+  } catch (_error) {
+    // A cross-origin ancestor is inaccessible; use only the URLs we can read.
+    return false;
+  }
+}
+
+function hasChallengeResource(node) {
+  if (!node) return false;
+  if (
+    (node.nodeName === "SCRIPT" || node.nodeName === "IFRAME") &&
+    isChallengeUrl(node.src)
+  ) {
+    return true;
+  }
+  if (!node.firstElementChild || typeof node.querySelectorAll !== "function") {
+    return false;
+  }
+  var resources = node.querySelectorAll("script[src], iframe[src]");
+  for (var i = 0; i < resources.length; i++) {
+    if (isChallengeUrl(resources[i].src)) return true;
+  }
+  return false;
+}
+
+var vscIsChallengeDocument = isChallengeDocument(window);
+var vscPageHooksSuspended = false;
+var vscPageHooksInactive = false;
+var vscPageHooksStateScheduled = false;
+var vscPageHooksDesiredActive = true;
+var vscChallengeObserver = null;
+var vscAttachShadowDescriptor = null;
+var vscAttachShadowWrapper = null;
+var vscDetachedShadowPending = 0;
+var vscDetachedShadowRecentUntil = 0;
+var vscLastActionShadowRescanAt = null;
+
+function suspendPageHooks(reason) {
+  if (vscPageHooksSuspended) return;
+  if (reason === "inactive") {
+    if (vscPageHooksInactive) return;
+    vscPageHooksInactive = true;
+  } else {
+    vscPageHooksSuspended = true;
+  }
+  document.dispatchEvent(new Event("speeder-restore-page-hooks"));
+  if (vscAttachShadowWrapper && Element.prototype.attachShadow === vscAttachShadowWrapper) {
+    Object.defineProperty(Element.prototype, "attachShadow", vscAttachShadowDescriptor);
+  }
+  delete window.vscAttachShadowPatched;
+  window.vscPageShadowBridgeRequested = false;
+  window.vscPageShadowBridgeLoaded = false;
+  window.vscPageNavigationApiBridgeLoaded = false;
+  clearTimeout(window.vscPageShadowBridgeRetryTimer);
+  var bridge = window.vscPageShadowBridgeScript;
+  if (bridge) bridge.remove();
+  if (vscPageHooksSuspended && vscChallengeObserver) vscChallengeObserver.disconnect();
+  if (Array.isArray(window.vscBoundedShadowFallbackTimers)) {
+    window.vscBoundedShadowFallbackTimers.forEach(function(timer) {
+      clearTimeout(timer);
+    });
+    window.vscBoundedShadowFallbackTimers.length = 0;
+  }
+  startLocationWatchFallback();
+  startBoundedShadowFallback();
+}
+
+// Use the same site-activity decision as controllers, excluding the temporary
+// tab pause. Coalesce hydration/navigation/storage bursts before touching hooks.
+function schedulePageHooksState(active) {
+  vscPageHooksDesiredActive = active;
+  if (vscPageHooksStateScheduled || vscPageHooksSuspended) return;
+  vscPageHooksStateScheduled = true;
+  Promise.resolve().then(function() {
+    vscPageHooksStateScheduled = false;
+    if (vscPageHooksSuspended) return;
+    if (!vscPageHooksDesiredActive) {
+      suspendPageHooks("inactive");
+    } else if (vscPageHooksInactive) {
+      vscPageHooksInactive = false;
+      window.vscPageShadowBridgeRetries = 0;
+      installPageShadowBridge();
+      patchAttachShadow();
+      rescanOpenShadowRoots(document);
+    }
+  });
+}
+
+function detectChallengeResources(mutations) {
+  if (vscPageHooksSuspended) return;
+  for (var i = 0; i < mutations.length; i++) {
+    var mutation = mutations[i];
+    if (mutation.type === "attributes") {
+      var target = mutation.target;
+      // Attribute churn on images and other elements must stay constant-time.
+      if (mutation.attributeName === "src" &&
+          (target.nodeName === "SCRIPT" || target.nodeName === "IFRAME") &&
+          isChallengeUrl(target.src)) suspendPageHooks();
+    }
+    for (var j = 0; j < mutation.addedNodes.length; j++) {
+      var node = mutation.addedNodes[j];
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (hasChallengeResource(node)) suspendPageHooks();
+    }
+    if (vscPageHooksSuspended) return;
+  }
+}
+
+function watchChallengeResources() {
+  if (hasChallengeResource(document)) {
+    suspendPageHooks();
+    return;
+  }
+  // Parser script end tags flush mutation microtasks; inserted external scripts
+  // normally still fetch then. Restore hooks here, before idle media discovery.
+  vscChallengeObserver = new MutationObserver(detectChallengeResources);
+  vscChallengeObserver.observe(document, {
+    attributes: true,
+    attributeFilter: ["src"],
+    childList: true,
+    subtree: true
+  });
+}
+
 var lastToggleSpeed = {}; // Store last toggle speeds per video
 var speederShared =
   typeof SpeederShared === "object" && SpeederShared ? SpeederShared : {};
@@ -28,6 +182,65 @@ function getSharedDefault(key, fallback) {
   return fallback;
 }
 
+function getViewportScrollEpoch(win) {
+  return Number(win && win.vscViewportScrollEpoch) || 0;
+}
+
+function getViewportScrollX(win) {
+  var scrollX = Number(win && win.scrollX);
+  if (Number.isFinite(scrollX)) return scrollX;
+  return Number(win && win.pageXOffset) || 0;
+}
+
+function getViewportScrollY(win) {
+  var scrollY = Number(win && win.scrollY);
+  if (Number.isFinite(scrollY)) return scrollY;
+  return Number(win && win.pageYOffset) || 0;
+}
+
+function cacheVideoRect(wrapper, video, rect) {
+  if (!wrapper || !rect) return null;
+  var win =
+    video && video.ownerDocument ? video.ownerDocument.defaultView : window;
+  wrapper.vscVideoRect = {
+    left: Number(rect.left) || 0,
+    top: Number(rect.top) || 0,
+    right: Number(rect.right) || 0,
+    bottom: Number(rect.bottom) || 0,
+    width: Number(rect.width) || 0,
+    height: Number(rect.height) || 0,
+    viewportScrollEpoch: getViewportScrollEpoch(win),
+    viewportScrollX: getViewportScrollX(win),
+    viewportScrollY: getViewportScrollY(win)
+  };
+  return wrapper.vscVideoRect;
+}
+
+function getCachedVideoRect(video) {
+  var wrapper = video && video.vsc && video.vsc.div;
+  var rect = (wrapper && wrapper.vscVideoRect) || null;
+  if (!rect || !video) return rect;
+
+  var win = video.ownerDocument && video.ownerDocument.defaultView;
+  var currentScrollEpoch = getViewportScrollEpoch(win);
+  if (
+    rect.viewportScrollEpoch === currentScrollEpoch &&
+    rect.viewportScrollX === getViewportScrollX(win) &&
+    rect.viewportScrollY === getViewportScrollY(win)
+  ) {
+    return rect;
+  }
+
+  // Scrolling changes getBoundingClientRect() without changing player layout.
+  // Refresh lazily on the next action so targeting stays exact for normal,
+  // fixed, sticky, and nested-scroll players without layout work per scroll.
+  try {
+    return cacheVideoRect(wrapper, video, video.getBoundingClientRect());
+  } catch (_error) {
+    return rect;
+  }
+}
+
 function getPrimaryVideoElement(mediaElements) {
   var candidates = Array.isArray(mediaElements)
     ? mediaElements
@@ -39,10 +252,13 @@ function getPrimaryVideoElement(mediaElements) {
   candidates.forEach(function(el, index) {
     if (!el || !el.vsc || !el.isConnected) return;
 
-    var rect = null;
-    try {
-      rect = el.getBoundingClientRect();
-    } catch (_error) {}
+    var rect = getCachedVideoRect(el);
+    var hasCachedRect = Boolean(rect);
+    if (!rect) {
+      try {
+        rect = el.getBoundingClientRect();
+      } catch (_error) {}
+    }
 
     var width = rect && Number(rect.width) > 0 ? Number(rect.width) : 0;
     var height = rect && Number(rect.height) > 0 ? Number(rect.height) : 0;
@@ -57,17 +273,24 @@ function getPrimaryVideoElement(mediaElements) {
       : 0;
     var visibleArea = visibleWidth * visibleHeight;
     var visuallyAvailable = visibleArea > 0;
-    try {
-      var computed = win && win.getComputedStyle(el);
-      if (
-        computed &&
-        (computed.display === "none" ||
-          computed.visibility === "hidden" ||
-          Number(computed.opacity) === 0)
-      ) {
-        visuallyAvailable = false;
-      }
-    } catch (_error) {}
+    if (
+      el.vsc.div &&
+      el.vsc.div.classList.contains("vsc-geometry-hidden")
+    ) {
+      visuallyAvailable = false;
+    } else if (!hasCachedRect) {
+      try {
+        var computed = win && win.getComputedStyle(el);
+        if (
+          computed &&
+          (computed.display === "none" ||
+            computed.visibility === "hidden" ||
+            Number(computed.opacity) === 0)
+        ) {
+          visuallyAvailable = false;
+        }
+      } catch (_error) {}
+    }
 
     var score = visibleArea;
     if (visuallyAvailable) score += 1e12;
@@ -88,6 +311,99 @@ function getPrimaryVideoElement(mediaElements) {
   });
 
   return best;
+}
+
+function getDiagnosticsSnapshot(media) {
+  var primary = media || getPrimaryVideoElement();
+  if (!primary) return null;
+
+  var fullscreenElement = getFullscreenElement(primary.ownerDocument);
+  var rect = null;
+  try {
+    rect = primary.getBoundingClientRect();
+  } catch (_error) {}
+
+  return {
+    pageHooks: {
+      installed: window.vscPageShadowBridgeLoaded === true,
+      suspended: vscPageHooksSuspended || vscPageHooksInactive,
+      reason: vscPageHooksSuspended ? "challenge" : vscPageHooksInactive ? "inactive" : null
+    },
+    controllers: tc.mediaElements.filter(function(item) {
+      return item && item.vsc && item.isConnected;
+    }).map(function(item) {
+      return getControllerMountDiagnostics(item, getFullscreenElement(item.ownerDocument));
+    }),
+    mediaCount: tc.mediaElements.filter(function(item) {
+      return item && item.isConnected;
+    }).length,
+    mediaType: String(primary.nodeName || "media").toLowerCase(),
+    playbackRate: Number(primary.playbackRate),
+    paused: primary.paused === true,
+    ended: primary.ended === true,
+    readyState: Number(primary.readyState) || 0,
+    muted: primary.muted === true,
+    volume: Number(primary.volume),
+    dimensions: rect
+      ? [Math.round(Number(rect.width) || 0), Math.round(Number(rect.height) || 0)]
+      : [0, 0],
+    fullscreen: {
+      active: Boolean(fullscreenElement),
+      element: fullscreenElement
+        ? String(fullscreenElement.nodeName || "element").toLowerCase()
+        : null,
+      ownsMedia: Boolean(
+        fullscreenElement &&
+          (fullscreenElement === primary ||
+            isComposedDescendant(primary, fullscreenElement))
+      )
+    },
+    controller: getControllerMountDiagnostics(primary, fullscreenElement),
+    effectiveSettings: {
+      enabled: tc.settings.enabled !== false,
+      tabPaused: tc.tabPaused === true,
+      startHidden: tc.settings.startHidden === true,
+      hideWithControls: tc.settings.hideWithControls === true,
+      rememberSpeed: tc.settings.rememberSpeed === true,
+      forceLastSavedSpeed: tc.settings.forceLastSavedSpeed === true,
+      shortcutTargetMode: tc.settings.shortcutTargetMode
+    },
+    siteRule: {
+      matched: Boolean(tc.activeSiteRule),
+      disabled: Boolean(
+        tc.activeSiteRule &&
+          siteRuleUtils.isSiteRuleDisabled(tc.activeSiteRule)
+      ),
+      overrideKeys: tc.activeSiteRule
+        ? Object.keys(tc.activeSiteRule)
+            .filter(function(key) {
+              return key !== "pattern" && key !== "title";
+            })
+            .sort()
+        : []
+    }
+  };
+}
+
+function getControllerMountDiagnostics(media, fullscreenElement) {
+  var controller = media.vsc;
+  var wrapper = controller && controller.div;
+  return {
+    present: Boolean(wrapper),
+    connected: Boolean(wrapper && wrapper.isConnected),
+    fullscreenActive: Boolean(fullscreenElement),
+    insideFullscreen: Boolean(wrapper && fullscreenElement &&
+      isComposedDescendant(wrapper, fullscreenElement)),
+    normalMount: Boolean(wrapper && controller &&
+      wrapper.parentNode === controller.normalControllerMount),
+    popoverOpen: isControllerPopoverOpen(wrapper),
+    hidden: Boolean(wrapper && wrapper.classList.contains("vsc-hidden")),
+    geometryHidden: Boolean(wrapper && wrapper.classList.contains("vsc-geometry-hidden")),
+    autohide: Boolean(wrapper && wrapper.classList.contains("ytp-autohide")),
+    idleHidden: Boolean(wrapper && wrapper.classList.contains("vsc-idle-hidden")),
+    fullscreenPopover: Boolean(wrapper && wrapper.classList.contains("vsc-fullscreen-popover")),
+    location: controller ? controller.controllerLocation : null
+  };
 }
 
 var tc = {
@@ -118,13 +434,7 @@ var tc = {
     shortcutTargetMode: getSharedDefault("shortcutTargetMode", "closest"),
     keyBindings: getSharedDefault("keyBindings", []),
     siteRules: getSharedDefault("siteRules", []),
-    controllerButtons: getSharedDefault("controllerButtons", [
-      "rewind",
-      "slower",
-      "faster",
-      "advance",
-      "display"
-    ]),
+    controllerButtons: getSharedDefault("controllerButtons", []),
     defaultLogLevel: 3,
     logLevel: 3,
     enableSubtitleNudge: getSharedDefault("enableSubtitleNudge", false),
@@ -151,13 +461,44 @@ var tc = {
   speedAccessTimes: {},
   persistedLastSpeed: 1.0,
   activeSiteRule: null,
+  tabPaused: false,
   siteRuleBase: null,
+  siteRuleAppliedHref: null,
   runtimeSettingsHydrated: false,
+  rawSyncSettingsSnapshot: null,
   pendingMediaCandidates: [],
+  pendingMediaCandidateNodes: new WeakSet(),
   settingsReloadRetries: 0,
   lastPointerPosition: null,
-  lastInteractedMedia: null
+  lastInteractedMedia: null,
+  frameToken:
+    window.crypto && typeof window.crypto.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : String(Date.now()) + "-" + Math.random().toString(36).slice(2)
 };
+
+function isSpeederActiveForCurrentPage() {
+  var active = siteRuleUtils.isSpeederActiveForSite(
+    tc.settings.enabled,
+    tc.activeSiteRule
+  );
+  if (tc.runtimeSettingsHydrated) schedulePageHooksState(active);
+  return tc.tabPaused !== true && active;
+}
+
+function applyTabPausedState(paused) {
+  tc.tabPaused = paused === true;
+  if (!tc.runtimeSettingsHydrated) return;
+  if (tc.tabPaused) {
+    clearAllSpeedRestoreEnforcement();
+    clearDeferredMediaCandidates();
+    tc.mediaElements.slice().forEach(function(media) {
+      removeController(media);
+    });
+    return;
+  }
+  initializeWhenReady(document, true);
+}
 
 var MIN_SPEED = Number(keyBindingUtils.MIN_SPEED) || 0.1;
 var MAX_SPEED = Number(keyBindingUtils.MAX_SPEED) || 16;
@@ -165,11 +506,17 @@ var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
 var vscObservedRoots = new WeakSet();
+var vscShadowBridgeListenerRoots = new WeakSet();
 var vscObservedRootList = [];
+var vscSupportsWeakRootReferences = typeof WeakRef === "function";
+var vscSuspendedObservedRoots = new WeakSet();
+var vscSuspendedObservedRootList = [];
 var vscConnectedScannedRoots = new WeakSet();
 var vscInitializedDocuments = new WeakSet();
 var vscSourceObjectIds = new WeakMap();
 var vscNextSourceObjectId = 1;
+var vscControllersByMount = new WeakMap();
+var vscDeferredMediaCandidates = new Set();
 var requestIdle =
   typeof window.requestIdleCallback === "function"
     ? window.requestIdleCallback.bind(window)
@@ -235,21 +582,25 @@ var controllerLocationStyles = {
 
 /* `label` fallback only when ui-icons has no path for the action. */
 var controllerButtonDefs = {
-  rewind: { label: "", className: "rw" },
-  slower: { label: "", className: "" },
-  faster: { label: "", className: "" },
-  advance: { label: "", className: "rw" },
-  display: { label: "", className: "hideButton" },
-  reset: { label: "\u21BB", className: "" },
-  fast: { label: "", className: "" },
-  nudge: { label: "", className: "" },
-  pause: { label: "", className: "" },
-  muted: { label: "", className: "" },
-  louder: { label: "", className: "" },
-  softer: { label: "", className: "" },
-  mark: { label: "", className: "" },
-  jump: { label: "", className: "" },
-  settings: { label: "", className: "" }
+  rewind: { label: "", name: "Rewind", className: "rw" },
+  slower: { label: "", name: "Decrease speed", className: "" },
+  faster: { label: "", name: "Increase speed", className: "" },
+  advance: { label: "", name: "Advance", className: "rw" },
+  display: {
+    label: "",
+    name: "Show or hide controller",
+    className: "hideButton"
+  },
+  reset: { label: "\u21BB", name: "Reset speed", className: "" },
+  fast: { label: "", name: "Toggle preferred speed", className: "" },
+  nudge: { label: "", name: "Toggle subtitle nudge", className: "" },
+  pause: { label: "", name: "Play or pause", className: "" },
+  muted: { label: "", name: "Mute or unmute", className: "" },
+  louder: { label: "", name: "Increase volume", className: "" },
+  softer: { label: "", name: "Decrease volume", className: "" },
+  mark: { label: "", name: "Mark position", className: "" },
+  jump: { label: "", name: "Jump to marked position", className: "" },
+  settings: { label: "", name: "Open Speeder settings", className: "" }
 };
 
 function createDefaultBinding(action, code, value) {
@@ -318,18 +669,12 @@ function ensureDefaultKeyBinding(action, code, value) {
   return true;
 }
 
-function getLegacyKeyCode(binding) {
-  return keyBindingUtils.getLegacyKeyCode(binding);
-}
-
 function normalizeControllerLocation(location) {
   return controllerUtils.normalizeControllerLocation(
     location,
     defaultControllerLocation
   );
 }
-
-var CONTROLLER_MARGIN_MAX_PX = 200;
 
 function normalizeControllerMarginPx(value, fallback) {
   return controllerUtils.clampControllerMarginPx(value, fallback);
@@ -484,6 +829,7 @@ function applyControllerLocation(videoController, location) {
 }
 
 function captureSiteRuleBase() {
+  tc.siteRuleAppliedHref = null;
   tc.siteRuleBase = {
     startHidden: tc.settings.startHidden,
     hideWithControls: tc.settings.hideWithControls,
@@ -594,18 +940,6 @@ function cycleControllerLocation(video) {
     video.vsc.controllerLocation || tc.settings.controllerLocation
   );
   clearManualControllerPosition(video.vsc);
-}
-
-function normalizeBindingKey(key) {
-  return keyBindingUtils.normalizeBindingKey(key);
-}
-
-function legacyBindingKeyToCode(key) {
-  return keyBindingUtils.legacyBindingKeyToCode(key);
-}
-
-function legacyKeyCodeToCode(keyCode) {
-  return keyBindingUtils.legacyKeyCodeToCode(keyCode);
 }
 
 function inferBindingCode(binding, fallbackCode) {
@@ -752,10 +1086,7 @@ function getDesiredSpeed(video) {
 }
 
 function isOnYouTube() {
-  return (
-    location.hostname.includes("youtube.com") ||
-    location.hostname.includes("youtube-nocookie.com")
-  );
+  return /(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(location.hostname);
 }
 
 function isYouTubeNativeSpeedRange(speed) {
@@ -766,22 +1097,23 @@ function isYouTubeNativeSpeedRange(speed) {
 }
 
 function tryYouTubeNativeSpeed(video, speed) {
-  if (!isOnYouTube() || !isYouTubeNativeSpeedRange(speed)) return false;
+  if (
+    !isOnYouTube() ||
+    typeof speed !== "number" ||
+    !isFinite(speed) ||
+    !isYouTubeNativeSpeedRange(speed)
+  ) return false;
 
   try {
     // YouTube's movie_player element exposes setPlaybackRate() but it's a
     // page-level JS method, not a native DOM method. Content scripts can't
     // see it directly. In Firefox, wrappedJSObject gives access to the
     // page's JS context.
-    var playerEl =
-      video.closest(".html5-video-player") ||
-      document.getElementById("movie_player");
-    if (!playerEl) return false;
-
-    // Try wrappedJSObject first (Firefox content script → page context)
-    var player = playerEl.wrappedJSObject || playerEl;
-    if (typeof player.setPlaybackRate === "function") {
-      player.setPlaybackRate(speed);
+    var player = getYouTubePlayerApi(video);
+    if (!player) return false;
+    var setPlaybackRate = player.setPlaybackRate;
+    if (typeof setPlaybackRate === "function") {
+      setPlaybackRate.call(player, speed);
       // Verify YouTube actually accepted the speed (it may silently clamp)
       var actualSpeed = video.playbackRate;
       if (Math.abs(actualSpeed - speed) > 0.01) {
@@ -792,7 +1124,7 @@ function tryYouTubeNativeSpeed(video, speed) {
       return true;
     }
   } catch (e) {
-    log("YouTube native speed failed: " + e.message, 3);
+    log("YouTube native speed failed", 3);
   }
   return false;
 }
@@ -972,6 +1304,11 @@ function schedulePersistLastSpeed(speed) {
 }
 
 var MAX_PERSISTED_SOURCE_SPEEDS = 200;
+
+function rememberToggleSpeed(sourceKey, speed) {
+  if (!sourceKey || !isValidSpeed(speed)) return;
+  lastToggleSpeed[sourceKey] = Number(speed);
+}
 
 function isPersistableSourceKey(sourceKey) {
   return Boolean(
@@ -1379,6 +1716,63 @@ function isMediaElement(node) {
   );
 }
 
+function isMediaSourceAttributeMutation(mutation, media) {
+  if (!mutation || mutation.type !== "attributes" || !media) return false;
+  if (mutation.target === media) {
+    return (
+      mutation.attributeName === "src" ||
+      mutation.attributeName === "currentSrc"
+    );
+  }
+  return Boolean(
+    mutation.attributeName === "src" &&
+      mutation.target &&
+      mutation.target.nodeName === "SOURCE" &&
+      mutation.target.parentElement === media
+  );
+}
+
+function observeMediaSourceNodes(media) {
+  if (!media || media.vscBootstrapSourceObserver) return;
+
+  var observer = new MutationObserver(function(mutations) {
+    if (!media.isConnected) {
+      observer.disconnect();
+      delete media.vscBootstrapSourceObserver;
+      return;
+    }
+    var sourceChanged = false;
+    for (var i = 0; i < mutations.length; i += 1) {
+      if (isMediaSourceAttributeMutation(mutations[i], media)) {
+        sourceChanged = true;
+        break;
+      }
+    }
+    if (sourceChanged) {
+      ensureController(media, media.parentElement || media.parentNode);
+    }
+  });
+  media.vscBootstrapSourceObserver = observer;
+  observer.observe(media, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ["src", "currentSrc"]
+  });
+}
+
+function disconnectBootstrapMediaSourceObserver(media) {
+  if (!media || !media.vscBootstrapSourceObserver) return;
+  media.vscBootstrapSourceObserver.disconnect();
+  delete media.vscBootstrapSourceObserver;
+}
+
+function clearDeferredMediaCandidates() {
+  vscDeferredMediaCandidates.forEach(function(media) {
+    disconnectBootstrapMediaSourceObserver(media);
+  });
+  vscDeferredMediaCandidates.clear();
+}
+
 function hasInteractivePlayerChrome(node) {
   if (!node || node.nodeName !== "VIDEO") return false;
   if (node.controls === true) return true;
@@ -1469,12 +1863,12 @@ function hasUsableMediaSource(node) {
   }
 
   if (node.querySelectorAll) {
-    return Array.from(node.querySelectorAll("source[src]")).some(function(
-      source
-    ) {
+    var sources = node.querySelectorAll("source[src]");
+    for (var i = 0; i < sources.length; i += 1) {
+      var source = sources[i];
       var src = source.getAttribute("src");
-      return typeof src === "string" && src.trim().length > 0;
-    });
+      if (typeof src === "string" && src.trim().length > 0) return true;
+    }
   }
 
   return false;
@@ -1494,10 +1888,9 @@ function ensureController(node, parent) {
     if (
       node &&
       (node.nodeName === "VIDEO" || node.nodeName === "AUDIO") &&
-      !tc.pendingMediaCandidates.some(function(candidate) {
-        return candidate.node === node;
-      })
+      !tc.pendingMediaCandidateNodes.has(node)
     ) {
+      tc.pendingMediaCandidateNodes.add(node);
       tc.pendingMediaCandidates.push({ node: node, parent: parent });
     }
     return null;
@@ -1505,15 +1898,18 @@ function ensureController(node, parent) {
   if (!isMediaElement(node)) return null;
   if (typeof tc.videoController === "undefined") defineVideoController();
 
-  // href selects site rules; re-run on every new/usable media so all runtime
-  // paths agree on activation and effective settings.
-  applySiteRuleOverrides();
-  if (!siteRuleUtils.isSpeederActiveForSite(tc.settings.enabled, tc.activeSiteRule)) {
+  // The URL is the only page input to site-rule matching. Reapply once when
+  // it changes, while keeping every media discovery path synchronous.
+  if (!reapplySiteRulesAndControllerGeometry()) {
+    disconnectBootstrapMediaSourceObserver(node);
+    vscDeferredMediaCandidates.delete(node);
     if (node.vsc) removeController(node);
     return null;
   }
   if (isAmbientLoopMedia(node)) {
     if (node.vsc) removeController(node);
+    disconnectBootstrapMediaSourceObserver(node);
+    vscDeferredMediaCandidates.add(node);
     return null;
   }
 
@@ -1529,6 +1925,8 @@ function ensureController(node, parent) {
   }
 
   if (node.vsc) {
+    vscDeferredMediaCandidates.delete(node);
+    disconnectBootstrapMediaSourceObserver(node);
     var existingController = node.vsc;
     var hasSource = hasUsableMediaSource(node);
     if (existingController.div) {
@@ -1537,7 +1935,7 @@ function ensureController(node, parent) {
 
     var fullscreenElement = getFullscreenElement(node.ownerDocument);
     var normalMount = getControllerMount(node) || parent || node.parentNode;
-    if (normalMount) existingController.normalControllerMount = normalMount;
+    if (normalMount) setNormalControllerMount(existingController, normalMount);
     if (
       fullscreenElement &&
       (fullscreenElement === node ||
@@ -1555,6 +1953,8 @@ function ensureController(node, parent) {
   }
 
   if (!hasUsableMediaSource(node)) {
+    vscDeferredMediaCandidates.add(node);
+    observeMediaSourceNodes(node);
     log(
       `Deferring controller creation for ${node.tagName}: no usable source yet`,
       5
@@ -1562,13 +1962,13 @@ function ensureController(node, parent) {
     return null;
   }
 
-  refreshAllControllerGeometry();
-
   log(
     `Creating controller for ${node.tagName}: ${node.src || node.currentSrc || "no src"}`,
     4
   );
   try {
+    vscDeferredMediaCandidates.delete(node);
+    disconnectBootstrapMediaSourceObserver(node);
     node.vsc = new tc.videoController(
       node,
       parent || node.parentElement || node.parentNode
@@ -1576,11 +1976,15 @@ function ensureController(node, parent) {
   } catch (error) {
     log(`Unable to create media controller: ${error.message}`, 2);
     removeController(node);
+    vscDeferredMediaCandidates.add(node);
+    observeMediaSourceNodes(node);
     return null;
   }
   if (!node.vsc || !node.vsc.div) {
     log("Controller initialization returned without a control host", 3);
     removeController(node);
+    vscDeferredMediaCandidates.add(node);
+    observeMediaSourceNodes(node);
     return null;
   }
   if (
@@ -1596,6 +2000,7 @@ function ensureController(node, parent) {
 function flushPendingMediaCandidates() {
   var pending = tc.pendingMediaCandidates.splice(0);
   pending.forEach(function(candidate) {
+    if (candidate.node) tc.pendingMediaCandidateNodes.delete(candidate.node);
     if (!candidate.node || !candidate.node.isConnected) return;
     ensureController(
       candidate.node,
@@ -1614,8 +2019,12 @@ function ensureControllerForMediaChild(node) {
 }
 
 function removeController(node) {
-  if (!node || !node.vsc) return;
+  if (!node) return;
+  vscDeferredMediaCandidates.delete(node);
+  disconnectBootstrapMediaSourceObserver(node);
+  if (!node.vsc) return;
   var controller = node.vsc;
+  cleanupControllerFullscreenSettle(controller);
   if (typeof controller.remove === "function") {
     try {
       controller.remove();
@@ -1624,6 +2033,14 @@ function removeController(node) {
       log(`Partial controller cleanup failed: ${error.message}`, 3);
     }
   }
+  if (controller.controllerHostCleanup) {
+    try {
+      controller.controllerHostCleanup(true);
+    } catch (_error) {}
+    controller.controllerHostCleanup = null;
+  }
+  unregisterControllerMount(controller, controller.controllerHostMount);
+  controller.controllerHostSchedule = null;
   if (controller.div && typeof controller.div.remove === "function") {
     controller.div.remove();
   }
@@ -1647,8 +2064,9 @@ function scanNodeForMedia(node, parent, added) {
     return;
   }
 
-  var ownerDocument = node.ownerDocument || document;
-  if (!added && ownerDocument.body && ownerDocument.body.contains(node)) return;
+  // A removed-node record can represent a move. isConnected works across
+  // shadow boundaries; document.body.contains() does not.
+  if (!added && node.isConnected) return;
 
   // Check if the node itself is a media element
   if (isMediaElement(node)) {
@@ -1684,10 +2102,45 @@ function scanNodeForMedia(node, parent, added) {
   }
 
   // Still need to observe shadow roots for media inside web components
-  if (node.shadowRoot) {
-    observeRoot(node.shadowRoot);
+  var shadowRoot = getElementShadowRoot(node);
+  if (
+    added &&
+    (!vscSupportsWeakRootReferences ||
+      vscPageHooksSuspended || !window.vscPageShadowBridgeLoaded ||
+      vscDetachedShadowPending || Date.now() < vscDetachedShadowRecentUntil) &&
+    typeof node.querySelectorAll === "function"
+  ) {
+    // Without active page hooks, inserted subtrees remain our discovery signal.
+    // Active bridges only need this for detached roots or engines without WeakRef.
+    var discoveredRoots = rescanOpenShadowRoots(node, undefined, false);
+    vscDetachedShadowPending = Math.max(0, vscDetachedShadowPending - discoveredRoots);
+  } else if (shadowRoot) {
+    observeRoot(shadowRoot);
   }
 
+}
+
+function compactMutationScanCandidates(candidates) {
+  var candidateByNode = new Map();
+  candidates.forEach(function(candidate) {
+    if (!candidate || !candidate.node) return;
+    // Keep the latest mutation target for a node that moved more than once.
+    candidateByNode.set(candidate.node, candidate);
+  });
+
+  var candidateNodes = new Set(candidateByNode.keys());
+  return Array.from(candidateByNode.values()).filter(function(candidate) {
+    // A light-DOM ancestor scan cannot cross into this node's shadow root.
+    // Keep the host as its own scan root so shadow-media detection is unchanged.
+    if (getElementShadowRoot(candidate.node)) return true;
+
+    var ancestor = candidate.node.parentNode;
+    while (ancestor) {
+      if (candidateNodes.has(ancestor)) return false;
+      ancestor = ancestor.parentNode;
+    }
+    return true;
+  });
 }
 
 function getScanNodeForRoot(root) {
@@ -1721,70 +2174,271 @@ function scanRootForMedia(root) {
 
 function rescanOpenShadowRoots(root, visited, rescanObserved) {
   var scanRoot = getScanNodeForRoot(root);
-  if (!scanRoot || typeof scanRoot.querySelectorAll !== "function") return;
+  if (!scanRoot || typeof scanRoot.querySelectorAll !== "function") return 0;
   var seen = visited || new WeakSet();
   var hosts = [];
+  var discoveredRoots = 0;
 
-  if (scanRoot.nodeType === Node.ELEMENT_NODE && scanRoot.shadowRoot) {
+  if (scanRoot.nodeType === Node.ELEMENT_NODE && getElementShadowRoot(scanRoot)) {
     hosts.push(scanRoot);
   }
   try {
-    var elements = scanRoot.querySelectorAll("*");
-    for (var i = 0; i < elements.length; i++) {
-      if (elements[i].shadowRoot) hosts.push(elements[i]);
+    var doc = scanRoot.ownerDocument || scanRoot;
+    var walker = doc.createTreeWalker(scanRoot, NodeFilter.SHOW_ELEMENT);
+    var element;
+    while ((element = walker.nextNode())) {
+      if (getElementShadowRoot(element)) hosts.push(element);
     }
   } catch (_error) {
-    return;
+    return 0;
   }
 
   hosts.forEach(function(host) {
-    var shadowRoot = host.shadowRoot;
-    if (!shadowRoot || seen.has(shadowRoot)) return;
+    var shadowRoot = getElementShadowRoot(host);
+    if (
+      !shadowRoot ||
+      seen.has(shadowRoot) ||
+      isSpeederControllerShadowRoot(shadowRoot)
+    ) {
+      return;
+    }
     seen.add(shadowRoot);
-    if (rescanObserved !== false || !vscObservedRoots.has(shadowRoot)) {
+    if (!vscObservedRoots.has(shadowRoot)) discoveredRoots += 1;
+    if (
+      rescanObserved !== false ||
+      !vscObservedRoots.has(shadowRoot) ||
+      !shadowRoot.vscMutationObserverAttached
+    ) {
       observeRoot(shadowRoot);
     }
-    rescanOpenShadowRoots(shadowRoot, seen, rescanObserved);
+    discoveredRoots += rescanOpenShadowRoots(shadowRoot, seen, rescanObserved);
   });
+  return discoveredRoots;
+}
+
+function isSpeederControllerHost(node) {
+  return Boolean(node && node.vscControllerHost === true);
+}
+
+function rescanShadowRootsForAction() {
+  if (
+    (!vscPageHooksSuspended && window.vscPageShadowBridgeLoaded) ||
+    !tc.runtimeSettingsHydrated || !isSpeederActiveForCurrentPage()
+  ) {
+    return false;
+  }
+  var now = Date.now();
+  if (vscLastActionShadowRescanAt !== null && now - vscLastActionShadowRescanAt < 2000) {
+    return false;
+  }
+  vscLastActionShadowRescanAt = now;
+  rescanOpenShadowRoots(document);
+  return true;
+}
+
+function isSpeederControllerShadowRoot(root) {
+  return Boolean(
+    root &&
+      root.host &&
+      isSpeederControllerHost(root.host)
+  );
+}
+
+function isObservedRootConnected(root) {
+  if (!root) return false;
+  try {
+    return Boolean(
+      root.nodeType === Node.DOCUMENT_NODE ||
+        root.isConnected ||
+        (root.host &&
+          (root.host.isConnected ||
+            (root.host.ownerDocument &&
+              root.host.ownerDocument.contains(root.host)))) ||
+        (root.ownerDocument && root.ownerDocument.contains(root))
+    );
+  } catch (_error) {
+    return true;
+  }
+}
+
+function trackObservedRoot(root) {
+  if (
+    !root ||
+    root.nodeType === Node.DOCUMENT_NODE ||
+    root.vscObservedRootTracked
+  ) {
+    return;
+  }
+
+  root.vscObservedRootTracked = true;
+  vscObservedRootList.push(createObservedRootReference(root));
+}
+
+function forEachTrackedObservedRoot(callback) {
+  var retainedRootReferences = [];
+  vscObservedRootList.forEach(function(rootReference) {
+    var root = dereferenceObservedRoot(rootReference);
+    if (!root) return;
+    if (isSpeederControllerShadowRoot(root)) {
+      root.vscObservedRootTracked = false;
+      return;
+    }
+    if (callback(root) !== false) {
+      retainedRootReferences.push(rootReference);
+    }
+  });
+  vscObservedRootList = retainedRootReferences;
+}
+
+function createObservedRootReference(root) {
+  return vscSupportsWeakRootReferences ? new WeakRef(root) : root;
+}
+
+function dereferenceObservedRoot(rootReference) {
+  return vscSupportsWeakRootReferences ? rootReference.deref() : rootReference;
+}
+
+function trackSuspendedObservedRoot(root) {
+  if (!root || vscSuspendedObservedRoots.has(root)) return;
+  vscSuspendedObservedRoots.add(root);
+  vscSuspendedObservedRootList.push(createObservedRootReference(root));
+}
+
+function forgetSuspendedObservedRoot(root) {
+  if (!root) return;
+  vscSuspendedObservedRoots.delete(root);
+  vscSuspendedObservedRootList = vscSuspendedObservedRootList.filter(
+    function(rootReference) {
+      var suspendedRoot = dereferenceObservedRoot(rootReference);
+      return suspendedRoot && suspendedRoot !== root;
+    }
+  );
+}
+
+function suspendRootMutationObserver(root, retainForReconnect) {
+  if (root && vscShadowBridgeListenerRoots.has(root)) {
+    root.removeEventListener("speeder-shadow-root-attached", handlePageShadowRootAttached, true);
+    vscShadowBridgeListenerRoots.delete(root);
+  }
+  if (retainForReconnect !== false) trackSuspendedObservedRoot(root);
+  var observer = root && root.vscMutationObserver;
+  if (!observer) return;
+  observer.disconnect();
+  if (typeof observer.takeRecords === "function") observer.takeRecords();
+  root.vscMutationObserver = null;
+  root.vscMutationObserverAttached = false;
+}
+
+function reconcileObservedRootConnections(doc, scanAllConnected) {
+  forEachTrackedObservedRoot(function(root) {
+    var connected = isObservedRootConnected(root);
+    if (!connected) {
+      // Weak references preserve detached/reinserted custom elements without
+      // retaining them. On older engines, release the strong fallback entry;
+      // an insertion scan will rediscover the open root if it returns.
+      suspendRootMutationObserver(root, vscSupportsWeakRootReferences);
+      if (!vscSupportsWeakRootReferences) {
+        forgetSuspendedObservedRoot(root);
+        root.vscObservedRootTracked = false;
+        return false;
+      }
+      return true;
+    }
+    if (
+      doc &&
+      root.ownerDocument !== doc &&
+      (!root.host || root.host.ownerDocument !== doc)
+    ) {
+      return;
+    }
+
+    setupListener(root);
+    attachMediaDetectionListeners(root);
+    vscSuspendedObservedRoots.delete(root);
+    var wasObservingMutations = root.vscMutationObserverAttached === true;
+    if (!wasObservingMutations) attachMutationObserver(root);
+    if (scanAllConnected || !wasObservingMutations) {
+      scanRootForMedia(root);
+    }
+    return true;
+  });
+}
+
+function resumeSuspendedObservedRoots(doc) {
+  var retainedSuspendedRootReferences = [];
+  vscSuspendedObservedRootList.forEach(function(rootReference) {
+    var root = dereferenceObservedRoot(rootReference);
+    if (!root || isSpeederControllerShadowRoot(root)) return;
+    if (!vscSuspendedObservedRoots.has(root)) return;
+    if (!isObservedRootConnected(root)) {
+      retainedSuspendedRootReferences.push(rootReference);
+      return;
+    }
+    if (
+      doc &&
+      root.ownerDocument !== doc &&
+      (!root.host || root.host.ownerDocument !== doc)
+    ) {
+      retainedSuspendedRootReferences.push(rootReference);
+      return;
+    }
+
+    vscSuspendedObservedRoots.delete(root);
+    setupListener(root);
+    attachMediaDetectionListeners(root);
+    if (!root.vscMutationObserverAttached) attachMutationObserver(root);
+    scanRootForMedia(root);
+  });
+  vscSuspendedObservedRootList = retainedSuspendedRootReferences;
+}
+
+function getObservedRootDocument(root) {
+  if (!root) return null;
+  if (root.nodeType === Node.DOCUMENT_NODE) return root;
+  return root.ownerDocument || (root.host && root.host.ownerDocument) || null;
 }
 
 function rescanObservedMediaRoots(doc) {
-  var retainedRoots = [];
-  vscObservedRootList.forEach(function(root) {
-    if (!root || root.nodeType === Node.DOCUMENT_NODE) return;
-    var connected = Boolean(root.host ? root.host.isConnected : root.isConnected);
-    if (!connected) return;
-    retainedRoots.push(root);
-    if (
-      !doc ||
-      root.ownerDocument === doc ||
-      (root.host && root.host.ownerDocument === doc)
-    ) {
-      scanRootForMedia(root);
-    }
-  });
-  vscObservedRootList = retainedRoots;
+  reconcileObservedRootConnections(doc, true);
+}
+
+function handlePageShadowRootAttached(event) {
+  var path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  var host = path[0] || event.target;
+  var root = getElementShadowRoot(host);
+  if (!root) return;
+  try {
+    observeRoot(root);
+  } catch (error) {
+    log(`Unable to observe page-created shadow root: ${error.message}`, 3);
+  }
+}
+
+function attachShadowBridgeListener(root) {
+  if (!root.host || vscShadowBridgeListenerRoots.has(root)) return;
+  // Inside a closed ancestor the original host is still visible in the path.
+  root.addEventListener("speeder-shadow-root-attached", handlePageShadowRootAttached, true);
+  vscShadowBridgeListenerRoots.add(root);
 }
 
 function observeRoot(root) {
-  if (!root) return;
+  if (!root || isSpeederControllerShadowRoot(root)) return;
+  attachShadowBridgeListener(root);
 
-  var isConnected = false;
-  try {
-    isConnected = root.nodeType === Node.DOCUMENT_NODE ||
-                  root.isConnected ||
-                  (root.host && (root.host.isConnected || (root.host.ownerDocument && root.host.ownerDocument.contains(root.host)))) ||
-                  (root.ownerDocument && root.ownerDocument.contains(root));
-  } catch (e) {
-    isConnected = true;
-  }
+  var isConnected = isObservedRootConnected(root);
 
   if (!vscObservedRoots.has(root)) {
     vscObservedRoots.add(root);
-    vscObservedRootList.push(root);
+  }
+  trackObservedRoot(root);
+
+  if (isConnected) {
     setupListener(root);
-    attachMutationObserver(root);
     attachMediaDetectionListeners(root);
+    if (!root.vscMutationObserverAttached) attachMutationObserver(root);
+    vscSuspendedObservedRoots.delete(root);
+  } else {
+    trackSuspendedObservedRoot(root);
   }
 
   if (
@@ -1800,6 +2454,7 @@ function observeRoot(root) {
 
 function patchAttachShadow() {
   if (
+    vscPageHooksSuspended || vscPageHooksInactive ||
     window.vscAttachShadowPatched ||
     typeof Element === "undefined" ||
     typeof Element.prototype.attachShadow !== "function"
@@ -1808,7 +2463,8 @@ function patchAttachShadow() {
   }
 
   var originalAttachShadow = Element.prototype.attachShadow;
-  Element.prototype.attachShadow = function() {
+  vscAttachShadowDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
+  vscAttachShadowWrapper = function() {
     var shadowRoot = originalAttachShadow.apply(this, arguments);
     try {
       if (shadowRoot) {
@@ -1819,60 +2475,70 @@ function patchAttachShadow() {
     }
     return shadowRoot;
   };
+  Element.prototype.attachShadow = vscAttachShadowWrapper;
   window.vscAttachShadowPatched = true;
 }
 
+function markPageShadowBridgeReady() {
+  if (vscPageHooksSuspended || vscPageHooksInactive) {
+    document.dispatchEvent(new Event("speeder-restore-page-hooks"));
+    return;
+  }
+  // Close the small interval between the pre-injection discovery pass and the
+  // page-world attachShadow patch becoming active. This runs at document_start
+  // while the tree is still small and replaces the old delayed whole-page scan.
+  rescanOpenShadowRoots(document, undefined, false);
+  window.vscPageShadowBridgeLoaded = true;
+  window.vscPageShadowBridgeRetries = 0;
+  clearTimeout(window.vscPageShadowBridgeRetryTimer);
+  if (window.vscPageNavigationApiBridgeLoaded) stopLocationWatch();
+  if (Array.isArray(window.vscBoundedShadowFallbackTimers)) {
+    window.vscBoundedShadowFallbackTimers.forEach(function(timer) {
+      clearTimeout(timer);
+    });
+    window.vscBoundedShadowFallbackTimers.length = 0;
+  }
+}
+
 function installPageShadowBridge() {
-  if (window.vscPageShadowBridgeRequested) return;
+  if (vscPageHooksSuspended || vscPageHooksInactive || window.vscPageShadowBridgeRequested) return;
 
   if (!window.vscPageBridgeListenersAttached) {
     window.vscPageBridgeListenersAttached = true;
     document.addEventListener(
       "speeder-shadow-root-attached",
+      handlePageShadowRootAttached,
+      true
+    );
+    document.addEventListener("speeder-detached-shadow-root-attached", function() {
+      vscDetachedShadowPending += 1;
+      vscDetachedShadowRecentUntil = Date.now() + 30000;
+    }, true);
+    document.addEventListener(
+      "speeder-location-changed",
       function(event) {
-        var host = event.target;
-        if (!host || !host.shadowRoot) return;
-        try {
-          observeRoot(host.shadowRoot);
-        } catch (error) {
-          log(`Unable to observe page-created shadow root: ${error.message}`, 3);
-        }
+        scheduleNavigationRescan(event);
       },
       true
     );
     document.addEventListener(
-      "speeder-location-changed",
+      "speeder-page-navigation-api-ready",
       function() {
-        scheduleNavigationRescan();
+        if (vscPageHooksSuspended || vscPageHooksInactive) return;
+        window.vscPageNavigationApiBridgeLoaded = true;
+        if (window.vscPageShadowBridgeLoaded) stopLocationWatch();
       },
+      true
+    );
+    document.addEventListener(
+      "speeder-page-bridge-ready",
+      markPageShadowBridgeReady,
       true
     );
   }
 
-  function startBoundedShadowFallback() {
-    if (window.vscBoundedShadowFallbackStarted) return;
-    window.vscBoundedShadowFallbackStarted = true;
-    window.vscBoundedShadowFallbackTimers = [3000, 10000, 30000].map(
-      function(delay) {
-        return setTimeout(function() {
-          requestIdle(
-            function() {
-              if (
-                !document.body ||
-                (delay !== 3000 && window.vscPageShadowBridgeLoaded)
-              ) {
-                return;
-              }
-              rescanOpenShadowRoots(document, undefined, false);
-            },
-            { timeout: 2000 }
-          );
-        }, delay);
-      }
-    );
-  }
-
   function handleBridgeFailure() {
+    if (vscPageHooksSuspended || vscPageHooksInactive || window.vscPageShadowBridgeScript !== bridge) return;
     window.vscPageShadowBridgeRequested = false;
     window.vscPageShadowBridgeRetries =
       (Number(window.vscPageShadowBridgeRetries) || 0) + 1;
@@ -1901,14 +2567,20 @@ function installPageShadowBridge() {
     return;
   }
   try {
+    // Discover roots that genuinely predate document_start now, while the DOM
+    // is still small. Connected hosts report their roots; detached-host signals
+    // enable bounded discovery within subsequently inserted subtrees.
+    if (!window.vscInitialShadowDiscoveryComplete) {
+      window.vscInitialShadowDiscoveryComplete = true;
+      rescanOpenShadowRoots(document, undefined, false);
+    }
     var bridge = document.createElement("script");
+    window.vscPageShadowBridgeScript = bridge;
     bridge.src = chrome.runtime.getURL("content/shadow-bridge.js");
     bridge.async = false;
     bridge.addEventListener("load", function() {
       bridge.remove();
-      window.vscPageShadowBridgeLoaded = true;
-      window.vscPageShadowBridgeRetries = 0;
-      clearTimeout(window.vscPageShadowBridgeRetryTimer);
+      if (!window.vscPageShadowBridgeLoaded) handleBridgeFailure();
     });
     bridge.addEventListener("error", function() {
       bridge.remove();
@@ -1923,6 +2595,19 @@ function installPageShadowBridge() {
     handleBridgeFailure();
     log(`Unable to install page shadow bridge: ${error.message}`, 3);
   }
+}
+
+function startBoundedShadowFallback() {
+  if (window.vscBoundedShadowFallbackTimers && window.vscBoundedShadowFallbackTimers.length) return;
+  window.vscBoundedShadowFallbackStarted = true;
+  window.vscBoundedShadowFallbackTimers = [3000, 10000, 30000].map(function(delay) {
+    return setTimeout(function() {
+      requestIdle(function() {
+        if (!document.body || window.vscPageShadowBridgeLoaded) return;
+        rescanOpenShadowRoots(document, undefined, false);
+      }, { timeout: 2000 });
+    }, delay);
+  });
 }
 
 /* Log levels */
@@ -1942,8 +2627,31 @@ function log(message, level) {
   }
 }
 
+function cloneRuntimeStorageSnapshot(storage) {
+  if (typeof vscClonePlainData === "function") {
+    return vscClonePlainData(storage || {});
+  }
+  try {
+    return JSON.parse(JSON.stringify(storage || {}));
+  } catch (_error) {
+    return Object.assign({}, storage || {});
+  }
+}
+
+function runtimeStorageSnapshotsEqual(left, right) {
+  if (typeof vscAreComparableValuesEqual === "function") {
+    return vscAreComparableValuesEqual(left || {}, right || {});
+  }
+  try {
+    return JSON.stringify(left || {}) === JSON.stringify(right || {});
+  } catch (_error) {
+    return false;
+  }
+}
+
 function hydrateRuntimeSettings(rawStorage, options) {
   var config = options || {};
+  tc.rawSyncSettingsSnapshot = cloneRuntimeStorageSnapshot(rawStorage || {});
   var storage =
     typeof vscExpandStoredSettings === "function"
       ? vscExpandStoredSettings(rawStorage || {})
@@ -1989,29 +2697,16 @@ function hydrateRuntimeSettings(rawStorage, options) {
     tc.persistedLastSpeed = nextLastSpeed;
   }
 
-  tc.settings.rememberSpeed = storage.rememberSpeed === true;
-  tc.settings.forceLastSavedSpeed = storage.forceLastSavedSpeed === true;
-  tc.settings.audioBoolean = storage.audioBoolean === true;
-  tc.settings.showAmbientLoopControls =
-    storage.showAmbientLoopControls === true;
-  tc.settings.enabled = storage.enabled !== false;
-  tc.settings.startHidden = storage.startHidden === true;
-  tc.settings.hideWithControls =
-    typeof storage.hideWithControls !== "undefined"
-      ? Boolean(storage.hideWithControls)
-      : Boolean(storage.hideWithYouTubeControls);
-  tc.settings.hideWithControlsTimer = Math.min(
-    15,
-    Math.max(0.1, Number(storage.hideWithControlsTimer) || 2.0)
-  );
+  [
+    "rememberSpeed", "forceLastSavedSpeed", "audioBoolean", "showAmbientLoopControls",
+    "enabled", "startHidden", "hideWithControls", "hideWithControlsTimer",
+    "controllerLocation", "controllerOpacity", "shortcutTargetMode",
+    "enableSubtitleNudge", "subtitleNudgeEnabledByDefault", "subtitleNudgeInterval",
+    "subtitleNudgeAmount"
+  ].forEach(function(key) {
+    tc.settings[key] = storage[key];
+  });
   tc.settings.hideWithYouTubeControls = tc.settings.hideWithControls;
-  tc.settings.controllerLocation = normalizeControllerLocation(
-    storage.controllerLocation
-  );
-  tc.settings.controllerOpacity = Number(storage.controllerOpacity);
-  if (!Number.isFinite(tc.settings.controllerOpacity)) {
-    tc.settings.controllerOpacity = getSharedDefault("controllerOpacity", 0.3);
-  }
   tc.settings.controllerMarginTop = normalizeControllerMarginPx(
     storage.controllerMarginTop,
     getSharedDefault("controllerMarginTop", 0)
@@ -2028,8 +2723,6 @@ function hydrateRuntimeSettings(rawStorage, options) {
     storage.controllerMarginLeft,
     getSharedDefault("controllerMarginLeft", 0)
   );
-  tc.settings.shortcutTargetMode =
-    storage.shortcutTargetMode === "all" ? "all" : "closest";
   tc.settings.siteRules = Array.isArray(storage.siteRules)
     ? storage.siteRules.map(function(rule) {
       return rule && typeof rule === "object" ? Object.assign({}, rule) : rule;
@@ -2037,25 +2730,7 @@ function hydrateRuntimeSettings(rawStorage, options) {
     : getSharedDefault("siteRules", []);
   tc.settings.controllerButtons = Array.isArray(storage.controllerButtons)
     ? storage.controllerButtons.slice()
-    : getSharedDefault("controllerButtons", [
-      "rewind",
-      "slower",
-      "faster",
-      "advance",
-      "display"
-    ]);
-  tc.settings.enableSubtitleNudge = Boolean(storage.enableSubtitleNudge);
-  tc.settings.subtitleNudgeEnabledByDefault =
-    typeof storage.subtitleNudgeEnabledByDefault !== "undefined"
-      ? Boolean(storage.subtitleNudgeEnabledByDefault)
-      : getSharedDefault("subtitleNudgeEnabledByDefault", true);
-  tc.settings.subtitleNudgeInterval = Math.min(
-    1000,
-    Math.max(250, Number(storage.subtitleNudgeInterval) || 250)
-  );
-  tc.settings.subtitleNudgeAmount =
-    Number(storage.subtitleNudgeAmount) ||
-    getSharedDefault("subtitleNudgeAmount", 0.001);
+    : getSharedDefault("controllerButtons", []);
 
   var addedDefaultBinding = false;
   addedDefaultBinding =
@@ -2202,10 +2877,9 @@ function applyRememberedSpeedsResetMarker(value) {
 }
 
 function applyCustomButtonIcons(customButtonIcons) {
-  tc.settings.customButtonIcons =
-    customButtonIcons && typeof customButtonIcons === "object"
-      ? customButtonIcons
-      : {};
+  tc.settings.customButtonIcons = vscNormalizeLocalSettings({
+    customButtonIcons: customButtonIcons || {}
+  }).customButtonIcons;
   if (!tc.mediaElements || !tc.mediaElements.length) return;
 
   tc.mediaElements.forEach(function(video) {
@@ -2253,6 +2927,7 @@ function scheduleRuntimeSettingsReload() {
   clearTimeout(window.vscSettingsReloadTimer);
   clearTimeout(window.vscSettingsReloadRetryTimer);
   window.vscSettingsReloadTimer = setTimeout(function() {
+    window.vscSettingsReloadTimer = null;
     chrome.storage.sync.get(null, function(rawStorage) {
       if (reloadGeneration !== window.vscSettingsReloadGeneration) return;
       if (chrome.runtime.lastError) {
@@ -2267,6 +2942,14 @@ function scheduleRuntimeSettingsReload() {
         return;
       }
       tc.settingsReloadRetries = 0;
+      if (
+        runtimeStorageSnapshotsEqual(
+          rawStorage || {},
+          tc.rawSyncSettingsSnapshot || {}
+        )
+      ) {
+        return;
+      }
       var wasForceEnabled = tc.settings.forceLastSavedSpeed === true;
       var wasRememberEnabled = tc.settings.rememberSpeed === true;
       hydrateRuntimeSettings(rawStorage || {}, {
@@ -2289,39 +2972,95 @@ function loadInitialLocalSettings(attempt, callback) {
   chrome.storage.local.get(
     ["customButtonIcons", "rememberedSpeeds", "rememberedSpeedsResetAt"],
     function(localStorage) {
-      if (chrome.runtime.lastError && attempt < 3) {
+      var readFailed = Boolean(chrome.runtime.lastError);
+      if (readFailed && attempt < 3) {
         setTimeout(function() {
           loadInitialLocalSettings(attempt + 1, callback);
         }, 100 * (attempt + 1));
         return;
       }
-      callback(chrome.runtime.lastError ? {} : localStorage || {});
+      callback(readFailed ? {} : localStorage || {}, readFailed);
     }
   );
+}
+
+function beginStartupStorageWatch() {
+  if (
+    window.vscStartupStorageListener ||
+    !chrome.storage ||
+    !chrome.storage.onChanged
+  ) {
+    return;
+  }
+
+  window.vscStartupStorageChanges = { sync: false, local: false };
+  window.vscStartupStorageListener = function(_changes, area) {
+    if (
+      window.vscStartupStorageChanges &&
+      (area === "sync" || area === "local")
+    ) {
+      window.vscStartupStorageChanges[area] = true;
+    }
+  };
+  chrome.storage.onChanged.addListener(window.vscStartupStorageListener);
+}
+
+function finishStartupStorageWatch() {
+  var changes = window.vscStartupStorageChanges || {
+    sync: true,
+    local: true
+  };
+  if (
+    window.vscStartupStorageListener &&
+    chrome.storage &&
+    chrome.storage.onChanged &&
+    typeof chrome.storage.onChanged.removeListener === "function"
+  ) {
+    chrome.storage.onChanged.removeListener(window.vscStartupStorageListener);
+  }
+  window.vscStartupStorageListener = null;
+  window.vscStartupStorageChanges = null;
+  return changes;
 }
 
 // Patch attachShadow immediately — before any async operations — so we
 // catch shadow roots created while chrome.storage.sync.get is pending.
 // Sites like archive.org create Lit/LitElement shadow DOMs during page load;
 // waiting for the storage callback would miss them entirely.
-patchAttachShadow();
-installPageShadowBridge();
+if (!vscIsChallengeDocument) {
+  watchChallengeResources();
+  patchAttachShadow();
+  installPageShadowBridge();
+}
 
 function loadInitialRuntimeSettings(attempt) {
   chrome.storage.sync.get(null, function(rawStorage) {
-  if (chrome.runtime.lastError && attempt < 3) {
+  var initialSyncReadFailed = Boolean(chrome.runtime.lastError);
+  if (initialSyncReadFailed && attempt < 3) {
     setTimeout(function() {
       loadInitialRuntimeSettings(attempt + 1);
     }, 100 * (attempt + 1));
     return;
   }
   hydrateRuntimeSettings(rawStorage || {});
+  if (chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+    chrome.runtime.sendMessage({ action: "get_tab_pause_state" }, function(response) {
+      if (!chrome.runtime.lastError && response) {
+        applyTabPausedState(response.paused === true);
+      }
+    });
+  }
   // patchAttachShadow() is now called at top-level before this callback
   // Add a listener for messages from the popup.
   // We use a global flag to ensure the listener is only attached once.
   if (!window.vscMessageListener) {
     chrome.runtime.onMessage.addListener(
       function(request, sender, sendResponse) {
+        if (request.action === "set_tab_paused") {
+          applyTabPausedState(request.paused === true);
+          sendResponse({ paused: tc.tabPaused });
+          return false;
+        }
         if (request.action === "rescan_page") {
           log("Re-scan command received from popup.", 4);
           initializeWhenReady(document, true);
@@ -2332,9 +3071,12 @@ function loadInitialRuntimeSettings(attempt) {
           // Do not sendResponse in frames with no media — only one response is
           // accepted tab-wide, and the top frame often wins before an iframe.
           var videoGs = getPrimaryVideoElement();
+          if (!videoGs && rescanShadowRootsForAction()) videoGs = getPrimaryVideoElement();
           if (!videoGs) return false;
           sendResponse({
             speed: videoGs.playbackRate,
+            frameToken: tc.frameToken,
+            diagnostics: getDiagnosticsSnapshot(videoGs),
             forceLastSavedSpeed: tc.settings.forceLastSavedSpeed === true,
             forceLastSavedSpeedControlledBySiteRule: Boolean(
               tc.activeSiteRule &&
@@ -2356,6 +3098,7 @@ function loadInitialRuntimeSettings(attempt) {
           // global base, then this reapplication keeps both paths consistent.
           applySiteRuleOverrides();
           var forceVideo = getPrimaryVideoElement();
+          if (!forceVideo && rescanShadowRootsForAction()) forceVideo = getPrimaryVideoElement();
           if (tc.settings.forceLastSavedSpeed) {
             tc.mediaElements.forEach(function(video) {
               if (!video || !video.vsc) return;
@@ -2372,10 +3115,13 @@ function loadInitialRuntimeSettings(attempt) {
         }
         if (request.action === "run_action") {
           if (
-            !siteRuleUtils.isSpeederActiveForSite(
-              tc.settings.enabled,
-              tc.activeSiteRule
-            )
+            request.targetFrameToken &&
+            request.targetFrameToken !== tc.frameToken
+          ) {
+            return false;
+          }
+          if (
+            !isSpeederActiveForCurrentPage()
           ) {
             return false;
           }
@@ -2398,7 +3144,7 @@ function loadInitialRuntimeSettings(attempt) {
     // Set the flag to prevent adding the listener again.
     window.vscMessageListener = true;
   }
-  loadInitialLocalSettings(0, function(loc) {
+  loadInitialLocalSettings(0, function(loc, initialLocalReadFailed) {
       applyCustomButtonIcons(loc && loc.customButtonIcons);
 
       applyRememberedSpeedsResetMarker(
@@ -2416,6 +3162,9 @@ function loadInitialRuntimeSettings(attempt) {
           if (isLastSpeedOnly) {
             var changedLastSpeed = Number(changes.lastSpeed.newValue);
             if (isValidSpeed(changedLastSpeed)) {
+              if (tc.rawSyncSettingsSnapshot) {
+                tc.rawSyncSettingsSnapshot.lastSpeed = changedLastSpeed;
+              }
               tc.persistedLastSpeed = changedLastSpeed;
               var newerLocalLastSpeed = isValidSpeed(tc.pendingLastSpeedValue)
                 ? Number(tc.pendingLastSpeedValue)
@@ -2518,49 +3267,67 @@ function loadInitialRuntimeSettings(attempt) {
         applyCustomButtonIcons(nv);
       });
     }
-      // Close the small gap between the initial sync/local reads and listener
-      // registration. A final read also converges if Options saved while this
-      // content script was starting.
-      scheduleRuntimeSettingsReload();
-      var customIconGeneration =
-        Number(window.vscCustomIconGeneration) || 0;
-      var rememberedSpeedsGeneration =
-        Number(window.vscRememberedSpeedsGeneration) || 0;
-      chrome.storage.local.get(
-        ["customButtonIcons", "rememberedSpeeds", "rememberedSpeedsResetAt"],
-        function(latestLocal) {
-          if (chrome.runtime.lastError) return;
-          if (
-            customIconGeneration ===
-            (Number(window.vscCustomIconGeneration) || 0)
-          ) {
-            applyCustomButtonIcons(latestLocal && latestLocal.customButtonIcons);
-          }
-          if (
-            rememberedSpeedsGeneration ===
-            (Number(window.vscRememberedSpeedsGeneration) || 0)
-          ) {
-            applyRememberedSpeedsResetMarker(
-              latestLocal && latestLocal.rememberedSpeedsResetAt
-            );
-            mergeRememberedSpeeds(latestLocal && latestLocal.rememberedSpeeds);
-            var latestRememberedSpeeds =
-              latestLocal && latestLocal.rememberedSpeeds;
+      // A temporary listener covered the gap before the durable listener above
+      // was registered. Verify storage only when it actually changed during
+      // startup instead of issuing two extra reads in every frame.
+      var startupStorageChanges = finishStartupStorageWatch();
+      if (initialSyncReadFailed) startupStorageChanges.sync = true;
+      if (initialLocalReadFailed) startupStorageChanges.local = true;
+      if (startupStorageChanges.sync) scheduleRuntimeSettingsReload();
+      if (startupStorageChanges.local) {
+        var customIconGeneration =
+          Number(window.vscCustomIconGeneration) || 0;
+        var rememberedSpeedsGeneration =
+          Number(window.vscRememberedSpeedsGeneration) || 0;
+        loadInitialLocalSettings(
+          0,
+          function(latestLocal, latestLocalReadFailed) {
+            if (latestLocalReadFailed) return;
             if (
-              !rememberedSpeedsPayloadMatches(
-                latestRememberedSpeeds,
-                buildRememberedSpeedsPayload()
-              )
+              customIconGeneration ===
+              (Number(window.vscCustomIconGeneration) || 0)
             ) {
-              schedulePersistRememberedSpeeds(true);
+              var latestCustomButtonIcons =
+                (latestLocal && latestLocal.customButtonIcons) || {};
+              if (
+                !runtimeStorageSnapshotsEqual(
+                  latestCustomButtonIcons,
+                  tc.settings.customButtonIcons || {}
+                )
+              ) {
+                applyCustomButtonIcons(latestCustomButtonIcons);
+              }
             }
-            if (tc.settings.rememberSpeed || tc.settings.forceLastSavedSpeed) {
-              tc.mediaElements.slice().forEach(applyRememberedSpeedPolicy);
+            if (
+              rememberedSpeedsGeneration ===
+              (Number(window.vscRememberedSpeedsGeneration) || 0)
+            ) {
+              var resetMarkerChanged = applyRememberedSpeedsResetMarker(
+                latestLocal && latestLocal.rememberedSpeedsResetAt
+              );
+              var latestRememberedSpeeds =
+                latestLocal && latestLocal.rememberedSpeeds;
+              var currentRememberedSpeeds = buildRememberedSpeedsPayload();
+              var rememberedSpeedsChanged = !rememberedSpeedsPayloadMatches(
+                latestRememberedSpeeds,
+                currentRememberedSpeeds
+              );
+              if (rememberedSpeedsChanged) {
+                mergeRememberedSpeeds(latestRememberedSpeeds);
+                schedulePersistRememberedSpeeds(true);
+              }
+              if (
+                (resetMarkerChanged || rememberedSpeedsChanged) &&
+                (tc.settings.rememberSpeed || tc.settings.forceLastSavedSpeed)
+              ) {
+                tc.mediaElements.slice().forEach(applyRememberedSpeedPolicy);
+              }
             }
           }
-        }
-      );
+        );
+      }
       tc.runtimeSettingsHydrated = true;
+      applySiteRuleOverrides();
       initializeWhenReady(document);
     });
   });
@@ -2568,8 +3335,11 @@ function loadInitialRuntimeSettings(attempt) {
 
 // Install before async settings hydration so SPA-owned window capture handlers
 // cannot hide later key events from Speeder.
-attachKeydownListeners(document);
-loadInitialRuntimeSettings(0);
+if (!vscIsChallengeDocument) {
+  attachKeydownListeners(document);
+  beginStartupStorageWatch();
+  loadInitialRuntimeSettings(0);
+}
 
 function getKeyBindings(action, what = "value") {
   try {
@@ -2590,7 +3360,11 @@ function setKeyBindings(action, value) {
 
 function createControllerButton(doc, action, label, className) {
   var button = doc.createElement("button");
+  var name = controllerButtonDefs[action] && controllerButtonDefs[action].name;
+  button.type = "button";
   button.dataset.action = action;
+  button.setAttribute("aria-label", name || action);
+  button.title = name || action;
   var custom =
     tc.settings.customButtonIcons &&
     tc.settings.customButtonIcons[action] &&
@@ -2693,6 +3467,15 @@ function isShadowRootNode(node) {
   );
 }
 
+function getElementShadowRoot(element) {
+  if (!element) return null;
+  try {
+    return element.openOrClosedShadowRoot || element.shadowRoot || null;
+  } catch (_error) {
+    return element.shadowRoot || null;
+  }
+}
+
 function isComposedDescendant(node, ancestor) {
   if (!node || !ancestor) return false;
   if (node === ancestor) return true;
@@ -2701,23 +3484,43 @@ function isComposedDescendant(node, ancestor) {
   }
 
   var current = node;
-  var depth = 0;
-  while (current && depth < 20) {
+  var visited = new Set();
+  while (current && !visited.has(current) && visited.size < 10000) {
     if (current === ancestor) return true;
-    if (current.parentElement) {
+    visited.add(current);
+    if (current.assignedSlot) {
+      current = current.assignedSlot;
+    } else if (current.parentElement) {
       current = current.parentElement;
     } else {
       var root =
         typeof current.getRootNode === "function" ? current.getRootNode() : null;
       current = root && root.host ? root.host : null;
     }
-    depth += 1;
   }
   return false;
 }
 
 function getControllerGeometryMount(mount) {
   return isShadowRootNode(mount) ? mount.host : mount;
+}
+
+function setNormalControllerMount(videoController, mount) {
+  videoController.normalControllerMount = mount;
+  // Some site integrations deliberately use a sibling overlay (e.g. Apple
+  // TV's scrim). Only invalidate containment for mounts that owned the media.
+  videoController.normalMountContainedMedia = isComposedDescendant(
+    videoController.video,
+    getControllerGeometryMount(mount)
+  );
+}
+
+function isNativeMediaDocument(doc) {
+  return Boolean(
+    doc &&
+      (doc.mozSyntheticDocument === true ||
+        /^(?:video\/|audio\/|application\/ogg(?:;|$))/i.test(doc.contentType || ""))
+  );
 }
 
 function getControllerMount(video, boundary) {
@@ -2748,6 +3551,10 @@ function getControllerMount(video, boundary) {
     return boundary;
   }
 
+  if (isNativeMediaDocument(video.ownerDocument)) {
+    return video.ownerDocument.body;
+  }
+
   // YouTube's .html5-video-container is often absolutely laid out and can
   // report a zero-height box even while its video is visibly playing. The
   // surrounding .html5-video-player is the real player/overlay boundary for
@@ -2766,8 +3573,6 @@ function getControllerMount(video, boundary) {
     return isShadowRootNode(directRoot) ? directRoot : null;
   }
 
-  var mountBoundary = null;
-
   var videoRect = video.getBoundingClientRect();
   var mount = video.parentElement;
   var candidate = mount;
@@ -2785,15 +3590,7 @@ function getControllerMount(video, boundary) {
   // Climb through tightly-sized wrappers so our host shares their stacking
   // context, but stop before broad page-layout containers.
   while (candidate && candidate.parentElement && depth < 5) {
-    if (mountBoundary && candidate === mountBoundary) break;
     var next = candidate.parentElement;
-    if (
-      mountBoundary &&
-      next !== mountBoundary &&
-      !mountBoundary.contains(next)
-    ) {
-      break;
-    }
     var nextRect = next.getBoundingClientRect();
     var widthLimit = Math.max(videoRect.width * 1.35, videoRect.width + 80);
     var heightLimit = Math.max(videoRect.height * 1.35, videoRect.height + 80);
@@ -2817,10 +3614,6 @@ function getControllerMount(video, boundary) {
     candidate = next;
     depth += 1;
 
-    // In fullscreen, the wrapper must remain inside the exact subtree the
-    // browser promotes to its top layer.
-    if (mountBoundary && next === mountBoundary) break;
-
     // Never climb out of a player-owned stacking context. Doing so lets the
     // controller's high local z-index escape above sticky page headers.
     if (createsControllerStackingContext(next)) break;
@@ -2831,13 +3624,22 @@ function getControllerMount(video, boundary) {
 
 function getFullscreenElement(doc) {
   if (!doc) return null;
-  return (
+  var element = (
     doc.fullscreenElement ||
     doc.webkitFullscreenElement ||
     doc.mozFullScreenElement ||
     doc.msFullscreenElement ||
     null
   );
+  var visited = new Set();
+  while (element && !visited.has(element) && visited.size < 10000) {
+    visited.add(element);
+    var root = getElementShadowRoot(element);
+    var inner = root && (root.fullscreenElement || root.webkitFullscreenElement || root.mozFullScreenElement);
+    if (!inner) break;
+    element = inner;
+  }
+  return element;
 }
 
 function positionControllerHost(wrapper, video, mount) {
@@ -2848,7 +3650,11 @@ function positionControllerHost(wrapper, video, mount) {
     return;
   }
   var videoRect = video.getBoundingClientRect();
-  if (wrapper.classList.contains("vsc-fullscreen-popover")) {
+  cacheVideoRect(wrapper, video, videoRect);
+  if (
+    wrapper.classList.contains("vsc-fullscreen-popover") ||
+    wrapper.classList.contains("vsc-media-document")
+  ) {
     if (videoRect.width <= 0 || videoRect.height <= 0) {
       wrapper.classList.add("vsc-geometry-hidden");
       wrapper.style.setProperty("display", "none", "important");
@@ -2914,7 +3720,9 @@ function configureControllerAutoHide(videoController, wrapper, force) {
     tc.settings.hideWithControls === true,
     Number(tc.settings.hideWithControlsTimer) || 2
   ]);
-  if (force !== true && videoController.autoHideSettingsSignature === signature) {
+  var ytPlayer = isOnYouTube() ? videoController.video.closest(".html5-video-player") : null;
+  if (force !== true && videoController.autoHideSettingsSignature === signature &&
+      videoController.youTubeAutoHidePlayer === ytPlayer) {
     return;
   }
 
@@ -2926,6 +3734,8 @@ function configureControllerAutoHide(videoController, wrapper, force) {
     videoController.youTubeAutoHideCleanup();
     videoController.youTubeAutoHideCleanup = null;
   }
+  videoController.youTubeAutoHidePlayer = null;
+  videoController.syncYouTubeAutoHide = null;
   if (videoController.genericAutoHideCleanup) {
     videoController.genericAutoHideCleanup();
     videoController.genericAutoHideCleanup = null;
@@ -2942,6 +3752,52 @@ function configureControllerAutoHide(videoController, wrapper, force) {
   }
 }
 
+function registerControllerMount(videoController, mount) {
+  if (!videoController || !mount) return;
+  var controllers = vscControllersByMount.get(mount);
+  if (!controllers) {
+    controllers = new Set();
+    vscControllersByMount.set(mount, controllers);
+  }
+  controllers.add(videoController);
+}
+
+function unregisterControllerMount(videoController, mount) {
+  if (!videoController || !mount) return;
+  var controllers = vscControllersByMount.get(mount);
+  if (!controllers) return;
+  controllers.delete(videoController);
+  if (controllers.size === 0) vscControllersByMount.delete(mount);
+}
+
+function attachSharedViewportScrollTracking(win) {
+  if (!win || win.vscViewportScrollTrackingAttached) return;
+  win.vscViewportScrollEpoch = getViewportScrollEpoch(win);
+  win.addEventListener(
+    "scroll",
+    function() {
+      win.vscViewportScrollEpoch = getViewportScrollEpoch(win) + 1;
+    },
+    { capture: true, passive: true }
+  );
+  win.vscViewportScrollTrackingAttached = true;
+}
+
+function attachSharedControllerResizeListener(win) {
+  if (!win || win.vscControllerResizeListenerAttached) return;
+  win.addEventListener(
+    "resize",
+    function() {
+      tc.mediaElements.forEach(function(media) {
+        var controller = media && media.vsc;
+        if (controller) scheduleControllerFullscreenSettle(controller);
+      });
+    },
+    { passive: true }
+  );
+  win.vscControllerResizeListenerAttached = true;
+}
+
 function setupControllerHostTracking(videoController, wrapper, mount) {
   if (!videoController || !wrapper || !mount) return;
 
@@ -2949,6 +3805,11 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
   var win = doc.defaultView || window;
   var geometryMount = getControllerGeometryMount(mount);
   if (!geometryMount || !geometryMount.style) return;
+  // Firefox's standalone media body can be 0px tall. Making it positioned
+  // replaces the viewport containing block of its absolutely positioned video
+  // and collapses playback. Anchor our own host to the viewport instead.
+  var nativeMediaDocument = isNativeMediaDocument(doc);
+  wrapper.classList.toggle("vsc-media-document", nativeMediaDocument);
   var frameId = null;
   var geometryRetryTimer = null;
   var geometryRetryAttempts = 0;
@@ -2989,7 +3850,7 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
     frameId = win.requestAnimationFrame(update);
   };
 
-  if (win.getComputedStyle(geometryMount).position === "static") {
+  if (!nativeMediaDocument && win.getComputedStyle(geometryMount).position === "static") {
     geometryMount.dataset.vscPositionOwner = "true";
     geometryMount.dataset.vscOriginalPosition =
       geometryMount.style.getPropertyValue("position");
@@ -2999,7 +3860,7 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
     geometryMount.style.setProperty("position", "relative");
   }
 
-  if (!createsControllerStackingContext(geometryMount)) {
+  if (!nativeMediaDocument && !createsControllerStackingContext(geometryMount)) {
     geometryMount.dataset.vscIsolationOwner = "true";
     geometryMount.dataset.vscOriginalIsolation =
       geometryMount.style.getPropertyValue("isolation");
@@ -3016,25 +3877,49 @@ function setupControllerHostTracking(videoController, wrapper, mount) {
     resizeObserver.observe(geometryMount);
   }
 
-  win.addEventListener("resize", schedule, { passive: true });
-  doc.addEventListener("fullscreenchange", schedule, { passive: true });
+  var mediaGeometryEvents = ["loadedmetadata", "play", "playing"];
+  mediaGeometryEvents.forEach(function(eventName) {
+    videoController.video.addEventListener(eventName, schedule, {
+      passive: true
+    });
+  });
+  attachSharedViewportScrollTracking(win);
+  attachSharedControllerResizeListener(win);
   geometryMount.addEventListener("scroll", schedule, { passive: true });
   update();
 
   videoController.controllerHostMount = mount;
+  registerControllerMount(videoController, mount);
+  videoController.controllerHostSchedule = schedule;
+  var resetGeometry = function() {
+    geometryRetryAttempts = 0;
+    if (geometryRetryTimer !== null) win.clearTimeout(geometryRetryTimer);
+    geometryRetryTimer = null;
+    schedule();
+  };
+  videoController.controllerHostResetGeometry = resetGeometry;
   videoController.controllerHostCleanup = function(forceRestore) {
+    unregisterControllerMount(videoController, mount);
     if (resizeObserver) resizeObserver.disconnect();
     if (frameId !== null) win.cancelAnimationFrame(frameId);
     if (geometryRetryTimer !== null) win.clearTimeout(geometryRetryTimer);
-    win.removeEventListener("resize", schedule);
-    doc.removeEventListener("fullscreenchange", schedule);
+    mediaGeometryEvents.forEach(function(eventName) {
+      videoController.video.removeEventListener(eventName, schedule);
+    });
     geometryMount.removeEventListener("scroll", schedule);
+    if (videoController.controllerHostSchedule === schedule) {
+      videoController.controllerHostSchedule = null;
+      videoController.controllerHostResetGeometry = null;
+    }
     var hasOtherController = false;
     try {
       hasOtherController = Array.from(
         mount.querySelectorAll(".vsc-controller")
       ).some(function(controllerHost) {
-        return controllerHost !== wrapper;
+        return (
+          controllerHost !== wrapper &&
+          isSpeederControllerHost(controllerHost)
+        );
       });
     } catch (e) {}
     if (
@@ -3107,16 +3992,33 @@ function remountControllerHost(videoController, mount) {
     videoController.div.isConnected &&
     videoController.div.parentNode === mount
   ) {
-    // Keep the max-z-index host last among equal-z-index player overlays.
-    if (videoController.div.nextSibling) {
+    // Keep controller hosts after page-owned overlays, but do not make multiple
+    // Speeder controllers in one mount endlessly append past one another.
+    var followingSibling = videoController.div.nextSibling;
+    var hasPageOwnedFollowingSibling = false;
+    while (followingSibling) {
+      if (
+        followingSibling.nodeType === Node.ELEMENT_NODE &&
+        !isSpeederControllerHost(followingSibling)
+      ) {
+        hasPageOwnedFollowingSibling = true;
+        break;
+      }
+      followingSibling = followingSibling.nextSibling;
+    }
+    if (hasPageOwnedFollowingSibling) {
       mount.appendChild(videoController.div);
       return true;
     }
-    positionControllerHost(
-      videoController.div,
-      videoController.video,
-      mount
-    );
+    if (typeof videoController.controllerHostSchedule === "function") {
+      videoController.controllerHostSchedule();
+    } else {
+      positionControllerHost(
+        videoController.div,
+        videoController.video,
+        mount
+      );
+    }
     return false;
   }
 
@@ -3149,14 +4051,33 @@ function disableDirectFullscreenPopover(videoController) {
   wrapper.removeAttribute("popover");
 }
 
-function enableFullscreenPopover(videoController, preferredMount) {
+function isControllerPopoverOpen(wrapper) {
+  if (!wrapper) return false;
+  try {
+    wrapper.vscFullscreenPopoverOpen = wrapper.matches(":popover-open");
+  } catch (_error) {}
+  return wrapper.vscFullscreenPopoverOpen === true;
+}
+
+function enableDirectFullscreenPopover(videoController) {
   if (!videoController || !videoController.video || !videoController.div) {
     return false;
   }
   var wrapper = videoController.div;
   if (typeof wrapper.showPopover !== "function") return false;
+  if (!videoController.fullscreenPopoverToggle) {
+    videoController.fullscreenPopoverToggle = function(event) {
+      if (event.newState) wrapper.vscFullscreenPopoverOpen = event.newState === "open";
+      if (!isControllerPopoverOpen(wrapper) &&
+          wrapper.classList.contains("vsc-fullscreen-popover") &&
+          getFullscreenElement(videoController.video.ownerDocument) === videoController.video) {
+        scheduleControllerFullscreenSettle(videoController);
+      }
+    };
+    wrapper.addEventListener("toggle", videoController.fullscreenPopoverToggle);
+  }
 
-  var normalMount = preferredMount || videoController.normalControllerMount;
+  var normalMount = videoController.normalControllerMount;
   var normalMountIsConnected = Boolean(
     normalMount &&
       (normalMount.isConnected ||
@@ -3164,7 +4085,7 @@ function enableFullscreenPopover(videoController, preferredMount) {
   );
   if (!normalMountIsConnected) {
     normalMount = getControllerMount(videoController.video);
-    videoController.normalControllerMount = normalMount;
+    setNormalControllerMount(videoController, normalMount);
   }
   if (!normalMount) return false;
   if (wrapper.parentNode !== normalMount) {
@@ -3173,7 +4094,7 @@ function enableFullscreenPopover(videoController, preferredMount) {
 
   wrapper.setAttribute("popover", "manual");
   wrapper.classList.add("vsc-fullscreen-popover");
-  if (!wrapper.vscFullscreenPopoverOpen) {
+  if (!isControllerPopoverOpen(wrapper)) {
     try {
       wrapper.showPopover();
       wrapper.vscFullscreenPopoverOpen = true;
@@ -3196,27 +4117,39 @@ function syncControllerFullscreenMount(videoController) {
   var doc = video.ownerDocument;
   var fullscreenElement = getFullscreenElement(doc);
   var targetMount = videoController.normalControllerMount;
-
+  var normalGeometryMount = getControllerGeometryMount(targetMount);
   if (
-    fullscreenElement &&
-    (fullscreenElement === video ||
-      isComposedDescendant(video, fullscreenElement))
+    !normalGeometryMount ||
+    !normalGeometryMount.isConnected ||
+    (videoController.normalMountContainedMedia === true &&
+      !isComposedDescendant(video, normalGeometryMount))
   ) {
-    targetMount = getControllerMount(video, fullscreenElement);
-  } else if (!fullscreenElement && (!targetMount || !targetMount.isConnected)) {
     targetMount = getControllerMount(video);
-    videoController.normalControllerMount = targetMount;
+    setNormalControllerMount(videoController, targetMount);
+    normalGeometryMount = getControllerGeometryMount(targetMount);
+  }
+  var ownsFullscreen = Boolean(
+    fullscreenElement &&
+      (fullscreenElement === video ||
+        isComposedDescendant(video, fullscreenElement))
+  );
+  var normalMountIsAlreadyFullscreenVisible = Boolean(
+    fullscreenElement &&
+      fullscreenElement !== video &&
+      normalGeometryMount &&
+      isComposedDescendant(normalGeometryMount, fullscreenElement)
+  );
+
+  if (ownsFullscreen && !normalMountIsAlreadyFullscreenVisible) {
+    targetMount = getControllerMount(video, fullscreenElement);
   }
 
   if (!targetMount) return false;
 
-  if (fullscreenElement) {
-    // Fullscreen elements and popovers both participate in the browser's top
-    // layer. Showing Speeder's host after the player enters fullscreen keeps it
-    // above provider-owned surfaces even when the provider clips descendants or
-    // creates a new fullscreen stacking context (notably Firefox + YouTube).
-    // Browsers without the Popover API retain the player-local remount fallback.
-    if (enableFullscreenPopover(videoController, targetMount)) return true;
+  if (fullscreenElement === video) {
+    // A replaced <video> cannot paint author children, so direct-media
+    // fullscreen is the only case that needs a separate top-layer popover.
+    if (enableDirectFullscreenPopover(videoController)) return true;
   } else {
     disableDirectFullscreenPopover(videoController);
   }
@@ -3242,12 +4175,15 @@ function defineVideoController() {
     this.suppressedRateChangeCount = 0;
     this.suppressedRateChangeUntil = 0;
     this.visibilityResumeHandler = null;
+    this.dragCleanup = null;
+    this.lifecycleReconcileFrame = null;
     this.resetToggleArmed = false;
     this.resetButtonEl = null;
     this.controllerLocation = normalizeControllerLocation(
       tc.settings.controllerLocation
     );
     this.structureSignature = getControllerStructureSignature();
+    attachFullscreenListeners(target.ownerDocument);
 
     log(`Creating video controller for ${target.tagName} with src: ${target.src || target.currentSrc || "none"}`, 4);
 
@@ -3358,9 +4294,6 @@ function defineVideoController() {
           setSpeed(event.target, expectedSpeed, false, false);
         }
 
-        if (isUserSeek) {
-          isUserSeek = false;
-        }
       }
     };
 
@@ -3407,23 +4340,21 @@ function defineVideoController() {
 
     var srcObserver = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
-        if (
-          mutation.type === "attributes" &&
-          (mutation.attributeName === "src" ||
-            mutation.attributeName === "currentSrc")
-        ) {
+        if (isMediaSourceAttributeMutation(mutation, this.video)) {
           log("mutation of A/V element", 5);
           if (this.div) {
             this.stopSubtitleNudge();
-            if (!mutation.target.src && !mutation.target.currentSrc) {
-              this.div.classList.toggle(
-                "vsc-nosource",
-                !hasUsableMediaSource(mutation.target)
-              );
+            var sourceAvailable = hasUsableMediaSource(this.video);
+            this.div.classList.toggle("vsc-nosource", !sourceAvailable);
+            if (!sourceAvailable) {
+              this.mediaSourceKey = "unknown_src";
+              this.targetSpeedSourceKey = "unknown_src";
             } else {
-              this.div.classList.remove("vsc-nosource");
-              applySourceTransitionPolicy(this.video, true);
-              if (!mutation.target.paused) this.startSubtitleNudge();
+              applySourceTransitionPolicy(
+                this.video,
+                mutation.target === this.video
+              );
+              if (!this.video.paused) this.startSubtitleNudge();
             }
             updateSubtitleNudgeIndicator(this.video);
           }
@@ -3431,14 +4362,35 @@ function defineVideoController() {
       });
     });
     this.srcObserver = srcObserver;
-    srcObserver.observe(target, { attributeFilter: ["src", "currentSrc"] });
+    srcObserver.observe(target, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ["src", "currentSrc"]
+    });
     if (!target.paused && target.playbackRate !== 1.0)
       this.startSubtitleNudge();
   };
 
   tc.videoController.prototype.remove = function() {
+    cleanupControllerFullscreenSettle(this);
+    if (this.fullscreenPopoverToggle && this.div) {
+      this.div.removeEventListener("toggle", this.fullscreenPopoverToggle);
+      this.fullscreenPopoverToggle = null;
+    }
     this.stopSubtitleNudge();
     disableDirectFullscreenPopover(this);
+    if (this.lifecycleReconcileFrame !== null) {
+      var lifecycleWindow =
+        this.video && this.video.ownerDocument
+          ? this.video.ownerDocument.defaultView || window
+          : window;
+      lifecycleWindow.cancelAnimationFrame(this.lifecycleReconcileFrame);
+      this.lifecycleReconcileFrame = null;
+    }
+    if (this.dragCleanup) {
+      this.dragCleanup();
+      this.dragCleanup = null;
+    }
     if (
       this.visibilityResumeHandler &&
       this.video &&
@@ -3463,7 +4415,22 @@ function defineVideoController() {
       this.genericAutoHideCleanup();
       this.genericAutoHideCleanup = null;
     }
-    if (this.div) this.div.remove();
+    if (this.div) {
+      if (this.div.showTimeOut !== undefined) {
+        clearTimeout(this.div.showTimeOut);
+        this.div.showTimeOut = undefined;
+      }
+      if (this.div.blinkTimeOut !== undefined) {
+        clearTimeout(this.div.blinkTimeOut);
+        this.div.blinkTimeOut = undefined;
+      }
+      var nudgeFlashIndicator = this.nudgeFlashIndicator;
+      if (nudgeFlashIndicator && nudgeFlashIndicator._flashTimer) {
+        clearTimeout(nudgeFlashIndicator._flashTimer);
+        nudgeFlashIndicator._flashTimer = null;
+      }
+      this.div.remove();
+    }
     if (this.controllerHostCleanup) {
       this.controllerHostCleanup();
       this.controllerHostCleanup = null;
@@ -3683,6 +4650,8 @@ function defineVideoController() {
         log("YouTube controls visible, showing controller", 5);
       }
     };
+    this.youTubeAutoHidePlayer = ytPlayer;
+    this.syncYouTubeAutoHide = syncControllerVisibility;
 
     // Initial sync
     syncControllerVisibility();
@@ -3754,11 +4723,6 @@ function defineVideoController() {
       timer = setTimeout(() => {
         timer = null;
         if (this.controllerInteractionActive) return;
-        // Only hide if the video is not paused
-        // (Many players keep controls visible while paused)
-        // However, the user said "Reveal on every mouse and keyboard input"
-        // and "auto-hidden after timespan".
-        // We'll follow the timer strictly.
         wrapper.classList.add("vsc-idle-hidden");
         log("Generic hide: controller hidden due to inactivity", 5);
       }, tc.settings.hideWithControlsTimer * 1000);
@@ -3781,8 +4745,8 @@ function defineVideoController() {
     // Initial show/timer
     resetTimer();
 
-    // The wrapper covers the player area on most sites due to inject.css styles,
-    // but we listen on both the video and the wrapper for maximum coverage.
+    // Players dispatch activity at different layers, so observe the media,
+    // aligned controller host, and player mount.
     const activityEvents = ["mousemove", "mousedown", "keydown", "touchstart"];
     const parentEl =
       getControllerGeometryMount(this.controllerHostMount) ||
@@ -3824,13 +4788,16 @@ function defineVideoController() {
     const speed = this.video.playbackRate.toFixed(2);
     var wrapper = doc.createElement("div");
     wrapper.classList.add("vsc-controller");
+    wrapper.vscControllerHost = true;
+    // Keep the host out of player layout while its shadow stylesheet loads.
+    wrapper.style.position = "absolute";
+    wrapper.style.pointerEvents = "none";
     if (!hasUsableMediaSource(this.video))
       wrapper.classList.add("vsc-nosource");
     if (tc.settings.startHidden) wrapper.classList.add("vsc-hidden");
     // z-index is handled by the base .vsc-controller CSS rule (2147483647).
-    // The controller lives inside the video container, so high z-index only
-    // makes it topmost within the local stacking context — it won't overlay
-    // page-level modals or dialogs.
+    // Normal mounts stay in the player stacking context; direct-video
+    // fullscreen uses a popover in the browser top layer.
     var shadow = wrapper.attachShadow({ mode: "open" });
     var shadowStylesheet = doc.createElement("link");
     shadowStylesheet.rel = "stylesheet";
@@ -3855,17 +4822,20 @@ function defineVideoController() {
 
     var buttonConfig = Array.isArray(tc.settings.controllerButtons)
       ? tc.settings.controllerButtons
-      : ["rewind", "slower", "faster", "advance", "display"];
+      : getSharedDefault("controllerButtons", []);
 
     var subtitleNudgeIndicator = null;
 
     buttonConfig.forEach(function(btnId) {
       if (btnId === "nudge") {
-        subtitleNudgeIndicator = doc.createElement("span");
+        subtitleNudgeIndicator = createControllerButton(
+          doc,
+          btnId,
+          controllerButtonDefs.nudge.label,
+          controllerButtonDefs.nudge.className
+        );
         subtitleNudgeIndicator.id = "nudge-indicator";
-        subtitleNudgeIndicator.setAttribute("role", "button");
         subtitleNudgeIndicator.setAttribute("aria-live", "polite");
-        subtitleNudgeIndicator.setAttribute("tabindex", "0");
         controls.appendChild(subtitleNudgeIndicator);
       } else {
         var def = controllerButtonDefs[btnId];
@@ -3949,21 +4919,6 @@ function defineVideoController() {
         true
       );
     });
-    if (subtitleNudgeIndicator) {
-      subtitleNudgeIndicator.addEventListener(
-        "click",
-        (e) => {
-          var video = this.video;
-          if (video) {
-            var newState = !isSubtitleNudgeEnabledForVideo(video);
-            setSubtitleNudgeEnabledForVideo(video, newState);
-          }
-          blurAfterPointerTap(subtitleNudgeIndicator, e);
-          e.stopPropagation();
-        },
-        true
-      );
-    }
     controller.addEventListener("click", (e) => e.stopPropagation(), false);
     controller.addEventListener("mousedown", (e) => e.stopPropagation(), false);
 
@@ -3980,7 +4935,7 @@ function defineVideoController() {
     ) {
       log("No suitable parent found, appending to body", 4);
       doc.body.appendChild(wrapper);
-      this.normalControllerMount = doc.body;
+      setNormalControllerMount(this, doc.body);
       setupControllerHostTracking(this, wrapper, doc.body);
       return wrapper;
     }
@@ -4017,14 +4972,14 @@ function defineVideoController() {
           break;
       }
       mountEl.appendChild(wrapper);
-      this.normalControllerMount = mountEl;
+      setNormalControllerMount(this, mountEl);
       setupControllerHostTracking(this, wrapper, mountEl);
       log("Controller successfully inserted into DOM", 4);
     } catch (error) {
       log(`Error inserting controller: ${error.message}`, 2);
       // Fallback to body insertion
       doc.body.appendChild(wrapper);
-      this.normalControllerMount = doc.body;
+      setNormalControllerMount(this, doc.body);
       setupControllerHostTracking(this, wrapper, doc.body);
     }
 
@@ -4033,10 +4988,13 @@ function defineVideoController() {
 }
 
 function applySiteRuleOverrides() {
+  var currentUrl = location.href;
   var wasForceEnabled = tc.settings.forceLastSavedSpeed === true;
   var wasRememberEnabled = tc.settings.rememberSpeed === true;
 
   function finishSiteRuleApplication(result) {
+    tc.siteRuleAppliedHref = currentUrl;
+    isSpeederActiveForCurrentPage();
     if (
       (wasForceEnabled && !tc.settings.forceLastSavedSpeed) ||
       (wasRememberEnabled && !tc.settings.rememberSpeed)
@@ -4053,7 +5011,6 @@ function applySiteRuleOverrides() {
     return finishSiteRuleApplication(false);
   }
 
-  var currentUrl = location.href;
   var matchedRule = siteRuleUtils.matchSiteRule(currentUrl, tc.settings.siteRules);
 
   if (!matchedRule) {
@@ -4129,12 +5086,14 @@ function applySiteRuleOverrides() {
 
 function removeIneligibleMediaControllers() {
   tc.mediaElements.slice().forEach(function(media) {
-    if (
-      media &&
-      ((media.nodeName === "AUDIO" && !tc.settings.audioBoolean) ||
-        isAmbientLoopMedia(media))
-    ) {
+    if (!media) return;
+    if (media.nodeName === "AUDIO" && !tc.settings.audioBoolean) {
       removeController(media);
+      return;
+    }
+    if (isAmbientLoopMedia(media)) {
+      removeController(media);
+      vscDeferredMediaCandidates.add(media);
     }
   });
 }
@@ -4152,10 +5111,14 @@ function refreshAllControllerGeometry() {
   });
 }
 
-/** Re-match site rules for current URL and refresh controller position/opacity on every video. */
+/** Re-match site rules and refresh existing controllers once per URL. */
 function reapplySiteRulesAndControllerGeometry() {
+  if (tc.siteRuleAppliedHref === location.href) {
+    return isSpeederActiveForCurrentPage();
+  }
+
   applySiteRuleOverrides();
-  if (!siteRuleUtils.isSpeederActiveForSite(tc.settings.enabled, tc.activeSiteRule)) {
+  if (!isSpeederActiveForCurrentPage()) {
     tc.mediaElements.slice().forEach(function(video) {
       removeController(video);
     });
@@ -4353,12 +5316,30 @@ function initializeWhenReady(doc, forceReinit = false) {
   }
 }
 
-function inIframe() {
-  try {
-    return window.self !== window.top;
-  } catch (e) {
-    return true;
-  }
+function isEditableShortcutTarget(event) {
+  var path =
+    event && typeof event.composedPath === "function"
+      ? event.composedPath()
+      : [event && event.target];
+
+  return path.some(function(target) {
+    if (!target || target.nodeType !== 1) return false;
+    var nodeName = target.nodeName;
+    var role = target.getAttribute && target.getAttribute("role");
+    var contentEditable =
+      target.getAttribute && target.getAttribute("contenteditable");
+    return (
+      nodeName === "INPUT" ||
+      nodeName === "TEXTAREA" ||
+      nodeName === "SELECT" ||
+      target.isContentEditable ||
+      (contentEditable !== null && contentEditable !== "false") ||
+      role === "textbox" ||
+      role === "searchbox" ||
+      role === "combobox" ||
+      role === "spinbutton"
+    );
+  });
 }
 
 function attachKeydownListeners(doc) {
@@ -4372,6 +5353,7 @@ function attachKeydownListeners(doc) {
     keyTarget.addEventListener(
       "keydown",
       function(event) {
+        if (!tc.runtimeSettingsHydrated) return;
         if (
           !event.getModifierState ||
           event.getModifierState("Alt") ||
@@ -4384,30 +5366,23 @@ function attachKeydownListeners(doc) {
           return;
         }
 
+        if (isEditableShortcutTarget(event)) return;
+
         if (
-          event.target.nodeName === "INPUT" ||
-          event.target.nodeName === "TEXTAREA" ||
-          event.target.isContentEditable
+          !isSpeederActiveForCurrentPage()
         ) {
           return;
         }
-
-        if (
-          !siteRuleUtils.isSpeederActiveForSite(
-            tc.settings.enabled,
-            tc.activeSiteRule
-          )
-        ) {
-          return;
-        }
-
-        if (!tc.mediaElements.length) return;
 
         var item = tc.settings.keyBindings.find(function(binding) {
           return matchesKeyBinding(binding, event);
         });
 
         if (item) {
+          if (!tc.mediaElements.length) {
+            rescanShadowRootsForAction();
+            if (!tc.mediaElements.length) return;
+          }
           runAction(item.action, item.value, event);
 
           // The per-site "Block site from capturing keypress" option owns
@@ -4433,11 +5408,14 @@ function attachMediaTargetTracking(doc) {
       if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) {
         return;
       }
-      tc.lastPointerPosition = {
-        document: doc,
-        x: event.clientX,
-        y: event.clientY
-      };
+      if (
+        !tc.lastPointerPosition ||
+        tc.lastPointerPosition.document !== doc
+      ) {
+        tc.lastPointerPosition = { document: doc, x: 0, y: 0 };
+      }
+      tc.lastPointerPosition.x = event.clientX;
+      tc.lastPointerPosition.y = event.clientY;
     },
     { capture: true, passive: true }
   );
@@ -4445,103 +5423,190 @@ function attachMediaTargetTracking(doc) {
 }
 
 function attachMutationObserver(root) {
+  attachShadowBridgeListener(root);
   if (root.vscMutationObserverAttached) return;
 
-  var pendingMutations = [];
+  var pendingControllerMountTargets = new Set();
+  var pendingAddedCandidates = new Map();
+  var pendingRemovedCandidates = new Map();
+  var pendingAriaHiddenTargets = new Set();
   var mutationProcessingScheduled = false;
   var observer = new MutationObserver(function(mutations) {
-    pendingMutations.push(...mutations);
+    detectChallengeResources(mutations);
+    mutations.forEach(function(mutation) {
+      if (mutation.type === "childList") {
+        // Text-only updates can still change a player's geometry. Preserve the
+        // former mount reconciliation while keeping the lookup mount-scoped.
+        pendingControllerMountTargets.add(mutation.target);
+        mutation.addedNodes.forEach(function(node) {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (isSpeederControllerHost(node)) return;
+          pendingAddedCandidates.set(node, {
+            node: node,
+            parent: mutation.target
+          });
+        });
+        mutation.removedNodes.forEach(function(node) {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (isSpeederControllerHost(node)) return;
+          pendingRemovedCandidates.set(node, {
+            node: node,
+            parent: mutation.target
+          });
+        });
+        return;
+      }
+
+      if (
+        mutation.type === "attributes" &&
+        mutation.attributeName === "aria-hidden"
+      ) {
+        pendingAriaHiddenTargets.add(mutation.target);
+      }
+    });
     if (mutationProcessingScheduled) return;
 
     mutationProcessingScheduled = true;
     requestIdle(
       function() {
-        var mutationsToProcess = pendingMutations.splice(0);
         mutationProcessingScheduled = false;
-        var controllerMountTargets = new Set();
+        var controllerMountTargets = pendingControllerMountTargets;
+        var addedCandidates = Array.from(pendingAddedCandidates.values());
+        var removedCandidates = Array.from(pendingRemovedCandidates.values());
+        var ariaHiddenTargets = pendingAriaHiddenTargets;
+        pendingControllerMountTargets = new Set();
+        pendingAddedCandidates = new Map();
+        pendingRemovedCandidates = new Map();
+        pendingAriaHiddenTargets = new Set();
 
-        mutationsToProcess.forEach(function(mutation) {
-          if (mutation.type === "childList") {
-            controllerMountTargets.add(mutation.target);
-            mutation.addedNodes.forEach(function(node) {
-              // Skip text nodes, comments, etc. — only elements can contain media
-              if (node.nodeType !== Node.ELEMENT_NODE) return;
-              scanNodeForMedia(node, node.parentNode || mutation.target, true);
-            });
-            mutation.removedNodes.forEach(function(node) {
-              if (node.nodeType !== Node.ELEMENT_NODE) return;
-              scanNodeForMedia(node, node.parentNode || mutation.target, false);
-            });
+        // A detached shadow root can be suspended while this idle task is
+        // queued. Ignore its stale summary; reconnecting the root performs a
+        // fresh media scan.
+        if (root.vscMutationObserver !== observer) return;
 
-            return;
+        compactMutationScanCandidates(removedCandidates).forEach(
+          function(candidate) {
+            scanNodeForMedia(
+              candidate.node,
+              candidate.node.parentNode || candidate.parent,
+              false
+            );
           }
-
-          if (mutation.type !== "attributes") return;
-
-          var target = mutation.target;
-          if (
-            isMediaElement(target) &&
-            (mutation.attributeName === "src" ||
-              mutation.attributeName === "currentSrc")
-          ) {
-            ensureController(target, target.parentElement || target.parentNode);
-            return;
+        );
+        compactMutationScanCandidates(addedCandidates).forEach(
+          function(candidate) {
+            scanNodeForMedia(
+              candidate.node,
+              candidate.node.parentNode || candidate.parent,
+              true
+            );
           }
+        );
 
-
+        ariaHiddenTargets.forEach(function(target) {
           if (
-            target.nodeName === "SOURCE" &&
-            mutation.attributeName === "src"
-          ) {
-            ensureControllerForMediaChild(target);
-            return;
-          }
-
-          if (
-            mutation.attributeName === "aria-hidden" &&
-            target.attributes["aria-hidden"] &&
-            target.attributes["aria-hidden"].value === "false"
+            target &&
+            target.getAttribute &&
+            target.getAttribute("aria-hidden") === "false"
           ) {
             scanNodeForMedia(
               target,
-              target.parentNode || root.host || mutation.target,
+              target.parentNode || root.host || target,
               true
             );
           }
         });
 
+        if (addedCandidates.length > 0) {
+          // Reconnect shadow roots that were created while detached, including
+          // roots nested below a larger subtree added in one DOM operation.
+          resumeSuspendedObservedRoots(
+            getObservedRootDocument(root)
+          );
+        }
+
         // Reconcile once per batch, not once per mutation. Large news/social
         // pages can emit hundreds of childList records in one render pass.
         if (controllerMountTargets.size > 0) {
-          tc.mediaElements.slice().forEach(function(video) {
-            if (!video || !video.vsc || !video.vsc.div) return;
-            var mount = video.vsc.controllerHostMount;
-            if (!controllerMountTargets.has(mount)) return;
-            remountControllerHost(video.vsc, mount);
+          controllerMountTargets.forEach(function(mount) {
+            var controllers = vscControllersByMount.get(mount);
+            if (!controllers) return;
+            Array.from(controllers).forEach(function(videoController) {
+              if (!videoController || !videoController.div) return;
+              remountControllerHost(videoController, mount);
+            });
           });
         }
 
-        // Document selectors do not cross shadow boundaries. A detached
-        // custom-element host can therefore hide connected-looking media from
-        // the removed subtree scan; prune by composed connectivity as a final
-        // reconciliation step for every mutation batch.
-        tc.mediaElements.slice().forEach(function(video) {
-          if (!video || video.isConnected) return;
-          removeController(video);
-        });
+        if (removedCandidates.length > 0) {
+          // Document selectors do not cross shadow boundaries. A detached
+          // custom-element host can therefore hide media from the removed
+          // subtree scan; prune once, then suspend detached-root observers.
+          tc.mediaElements.slice().forEach(function(video) {
+            if (!video || video.isConnected) return;
+            removeController(video);
+          });
+          Array.from(vscDeferredMediaCandidates).forEach(function(media) {
+            if (!media || media.isConnected) return;
+            vscDeferredMediaCandidates.delete(media);
+            disconnectBootstrapMediaSourceObserver(media);
+          });
+          reconcileObservedRootConnections(
+            getObservedRootDocument(root),
+            false
+          );
+        }
       },
       { timeout: 1000 }
     );
   });
 
   observer.observe(root, {
-    attributeFilter: ["aria-hidden", "src", "currentSrc"],
+    attributeFilter: ["aria-hidden", "src"],
     childList: true,
     subtree: true,
     attributes: true
   });
 
+  if (root === document && vscChallengeObserver) {
+    detectChallengeResources(vscChallengeObserver.takeRecords());
+    vscChallengeObserver.disconnect();
+    vscChallengeObserver = null;
+  }
+
+  root.vscMutationObserver = observer;
   root.vscMutationObserverAttached = true;
+}
+
+function scheduleMediaLifecycleReconcile(media, videoController) {
+  if (
+    !media ||
+    !videoController ||
+    videoController.lifecycleReconcileFrame !== null
+  ) {
+    return;
+  }
+
+  var doc = media.ownerDocument;
+  var win = (doc && doc.defaultView) || window;
+  videoController.lifecycleReconcileFrame = win.requestAnimationFrame(
+    function() {
+      videoController.lifecycleReconcileFrame = null;
+      if (
+        !media.isConnected ||
+        media.vsc !== videoController ||
+        !videoController.div
+      ) {
+        return;
+      }
+
+      var nextMount = getControllerMount(media);
+      if (nextMount) setNormalControllerMount(videoController, nextMount);
+      // A play/metadata event can arrive after fullscreenchange. Resolve the
+      // active fullscreen boundary again instead of restoring the normal host.
+      syncControllerFullscreenMount(videoController);
+    }
+  );
 }
 
 function attachMediaDetectionListeners(root) {
@@ -4550,6 +5615,36 @@ function attachMediaDetectionListeners(root) {
   var handleDetectedMedia = function(event) {
     var target = event.target;
     if (!isMediaElement(target)) return;
+
+    var existingController = target.vsc;
+    var geometryMount =
+      existingController &&
+      getControllerGeometryMount(existingController.controllerHostMount);
+    var ambientSignatureMayNowApply = Boolean(
+      target.nodeName === "VIDEO" &&
+        target.autoplay === true &&
+        (target.muted === true || target.defaultMuted === true) &&
+        target.loop === true &&
+        target.playsInline === true &&
+        target.controls !== true &&
+        !tc.settings.showAmbientLoopControls
+    );
+    if (
+      tc.siteRuleAppliedHref === location.href &&
+      !ambientSignatureMayNowApply &&
+      existingController &&
+      existingController.div &&
+      existingController.div.isConnected &&
+      existingController.structureSignature === getControllerStructureSignature() &&
+      geometryMount &&
+      isComposedDescendant(target, geometryMount)
+    ) {
+      // The controller's target-level lifecycle listeners own source and speed
+      // updates. Defer the mount/geometry repair to one animation frame so a
+      // lifecycle burst cannot force repeated synchronous layout.
+      scheduleMediaLifecycleReconcile(target, existingController);
+      return;
+    }
     ensureController(target, target.parentElement || target.parentNode);
   };
 
@@ -4566,35 +5661,140 @@ function attachMediaDetectionListeners(root) {
   root.vscMediaEventListenersAttached = true;
 }
 
-function scheduleNavigationRescan() {
+function scheduleNavigationRescan(event) {
   var nextHref = location.href;
-  if (window.vscLastObservedHref !== nextHref) {
-    // Pointer and controller interaction state belongs to the previous route.
-    // YouTube keeps hover-preview and Shorts players connected across SPA
-    // navigations, so retaining either target can send shortcuts to an
-    // off-screen/stale player even though the new watch controller works.
-    tc.lastPointerPosition = null;
+  var urlChanged = window.vscLastObservedHref !== nextHref;
+  var navigationSignaled = Boolean(event && event.type);
+  var forceYouTubeReconcile = Boolean(
+    event && event.type === "yt-navigate-finish"
+  );
+  if (!urlChanged && !navigationSignaled) return;
+
+  if (urlChanged) {
+    // A media identity belongs to the previous route, but viewport pointer
+    // coordinates remain valid while the cursor is stationary. Keep them so
+    // shortcuts can still choose the closest controller after an SPA swap.
     tc.lastInteractedMedia = null;
   }
   window.vscLastObservedHref = nextHref;
+  window.vscNavigationForceDiscovery =
+    window.vscNavigationForceDiscovery === true || forceYouTubeReconcile;
+  if (!urlChanged && window.vscNavigationRescanTimer) return;
   clearTimeout(window.vscNavigationRescanTimer);
   window.vscNavigationRescanTimer = setTimeout(function() {
-    initializeWhenReady(document, true);
+    window.vscNavigationRescanTimer = null;
+    var forceDiscovery = window.vscNavigationForceDiscovery === true;
+    window.vscNavigationForceDiscovery = false;
+    reconcileAfterNavigation(document, forceDiscovery);
   }, 300);
+}
+
+function stopLocationWatch() {
+  if (!window.vscLocationWatchTimer) return;
+  clearInterval(window.vscLocationWatchTimer);
+  window.vscLocationWatchTimer = null;
+}
+
+function startLocationWatchFallback() {
+  if (
+    window.vscLocationWatchTimer ||
+    (window.vscPageShadowBridgeLoaded &&
+      window.vscPageNavigationApiBridgeLoaded)
+  ) {
+    return;
+  }
+  window.vscLocationWatchTimer = setInterval(function() {
+    if (window.vscLastObservedHref !== location.href) {
+      scheduleNavigationRescan();
+    }
+  }, 1000);
+}
+
+function reconcileAfterNavigation(doc, forceDiscovery) {
+  if (!tc.runtimeSettingsHydrated || !doc) {
+    initializeWhenReady(doc, true);
+    return;
+  }
+
+  var wasActive = isSpeederActiveForCurrentPage();
+  var previouslyIncludedAudio = tc.settings.audioBoolean === true;
+  var previouslyIncludedAmbient = tc.settings.showAmbientLoopControls === true;
+  var previousStructureSignature = getControllerStructureSignature();
+
+  if (tc.siteRuleAppliedHref !== location.href) applySiteRuleOverrides();
+  var isActive = isSpeederActiveForCurrentPage();
+  // Page hooks follow URL rules even while a SPA is replacing its body.
+  if (!doc.body) {
+    initializeWhenReady(doc, true);
+    return;
+  }
+
+  observeRoot(doc);
+  resumeSuspendedObservedRoots(doc);
+  if (!isActive) {
+    clearDeferredMediaCandidates();
+    tc.mediaElements.slice().forEach(function(media) {
+      removeController(media);
+    });
+    vscInitializedDocuments.add(doc);
+    return;
+  }
+
+  removeIneligibleMediaControllers();
+  var discoveryScopeExpanded = Boolean(
+    !wasActive ||
+      (!previouslyIncludedAudio && tc.settings.audioBoolean === true) ||
+      (!previouslyIncludedAmbient &&
+        tc.settings.showAmbientLoopControls === true)
+  );
+  var needsFullDiscovery = Boolean(
+    forceDiscovery ||
+      discoveryScopeExpanded ||
+      !vscInitializedDocuments.has(doc) ||
+      !window.vscPageShadowBridgeLoaded
+  );
+
+  if (needsFullDiscovery) {
+    scanRootForMedia(doc);
+    rescanObservedMediaRoots(doc);
+  } else {
+    Array.from(vscDeferredMediaCandidates).forEach(function(media) {
+      if (!media || !media.isConnected) {
+        vscDeferredMediaCandidates.delete(media);
+        return;
+      }
+      ensureController(media, media.parentElement || media.parentNode);
+    });
+    var structureChanged =
+      previousStructureSignature !== getControllerStructureSignature();
+    tc.mediaElements.slice().forEach(function(media) {
+      if (!media || !media.isConnected) {
+        removeController(media);
+        return;
+      }
+      if (
+        structureChanged ||
+        !media.vsc ||
+        !media.vsc.div ||
+        !media.vsc.div.isConnected
+      ) {
+        ensureController(media, media.parentElement || media.parentNode);
+        return;
+      }
+      scheduleMediaLifecycleReconcile(media, media.vsc);
+    });
+  }
+
+  refreshAllControllerGeometry();
+  if (tc.settings.rememberSpeed || tc.settings.forceLastSavedSpeed) {
+    tc.mediaElements.slice().forEach(applyRememberedSpeedPolicy);
+  }
+  vscInitializedDocuments.add(doc);
+  flushPendingMediaCandidates();
 }
 
 function attachNavigationListeners() {
   if (window.vscNavigationListenersAttached) return;
-
-  ["pushState", "replaceState"].forEach(function(method) {
-    if (typeof history[method] !== "function") return;
-    var original = history[method];
-    history[method] = function() {
-      var result = original.apply(this, arguments);
-      scheduleNavigationRescan();
-      return result;
-    };
-  });
 
   window.addEventListener("popstate", scheduleNavigationRescan);
   window.addEventListener("hashchange", scheduleNavigationRescan);
@@ -4603,13 +5803,7 @@ function attachNavigationListeners() {
     document.addEventListener("yt-navigate-finish", scheduleNavigationRescan);
   }
   window.vscLastObservedHref = location.href;
-  if (!window.vscLocationWatchTimer) {
-    window.vscLocationWatchTimer = setInterval(function() {
-      if (window.vscLastObservedHref !== location.href) {
-        scheduleNavigationRescan();
-      }
-    }, 1000);
-  }
+  startLocationWatchFallback();
   window.vscNavigationListenersAttached = true;
 }
 
@@ -4620,16 +5814,15 @@ function initializeNow(doc, forceReinit = false) {
   // later whitelisted SPA route can never reactivate the extension.
   attachNavigationListeners();
   if (typeof tc.videoController === "undefined") defineVideoController();
-  applySiteRuleOverrides();
-  var isActive = siteRuleUtils.isSpeederActiveForSite(
-    tc.settings.enabled,
-    tc.activeSiteRule
-  );
+  if (tc.siteRuleAppliedHref !== location.href) applySiteRuleOverrides();
+  var isActive = isSpeederActiveForCurrentPage();
 
   // Keep observing while inactive so dynamically-created media/shadow roots
   // are available to the next forced SPA rescan, but remove stale controls.
   observeRoot(doc);
+  resumeSuspendedObservedRoots(doc);
   if (!isActive) {
+    clearDeferredMediaCandidates();
     tc.mediaElements.slice().forEach(function(video) {
       removeController(video);
     });
@@ -4776,16 +5969,7 @@ function getClosestMediaToPointer(candidates, pointerPosition) {
 
   candidates.forEach(function(video) {
     if (!video || !video.vsc || !video.isConnected) return;
-    var target = getControllerElement(video.vsc) || video;
-    var rect = null;
-    try {
-      rect = target.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) {
-        rect = video.getBoundingClientRect();
-      }
-    } catch (_error) {
-      return;
-    }
+    var rect = getCachedVideoRect(video);
     if (!rect || rect.width <= 0 || rect.height <= 0) return;
     var distance = distanceSquaredToRect(
       pointerPosition.x,
@@ -4866,6 +6050,9 @@ function runAction(action, value, e) {
     chrome.runtime.sendMessage({ action: "openOptions" });
     return;
   }
+  if (mediaTagsToProcess.length === 0 && rescanShadowRootsForAction()) {
+    mediaTagsToProcess = resolveActionMediaTargets(e, specificVideo);
+  }
   if (mediaTagsToProcess.length === 0 && action !== "display") return;
 
   if (action === "toggleSubtitleNudge" && mediaTagsToProcess.length > 0) {
@@ -4914,12 +6101,10 @@ function runAction(action, value, e) {
     );
     switch (action) {
       case "rewind":
-        isUserSeek = true;
         extendSpeedRestoreWindow(v);
         v.currentTime -= numValue;
         break;
       case "advance":
-        isUserSeek = true;
         extendSpeedRestoreWindow(v);
         v.currentTime += numValue;
         break;
@@ -5059,7 +6244,7 @@ function resetSpeed(v, target, isFastKey = false) {
       setSpeed(v, lastToggle, false, true);
     } else {
       // Not at preferred speed, save current as toggle speed and go to preferred
-      lastToggleSpeed[videoId] = currentSpeed;
+      rememberToggleSpeed(videoId, currentSpeed);
       setSpeed(v, preferredSpeed, false, true);
     }
   } else {
@@ -5076,7 +6261,7 @@ function resetSpeed(v, target, isFastKey = false) {
       setSpeed(v, speedToRestore, false, true, true);
     } else {
       // Not at 1.0, save current as toggle speed and go to 1.0
-      lastToggleSpeed[videoId] = currentSpeed;
+      rememberToggleSpeed(videoId, currentSpeed);
       v.vsc.resetToggleArmed = true;
       setSpeed(v, resetSpeedValue, false, true, true);
     }
@@ -5086,29 +6271,48 @@ function resetSpeed(v, target, isFastKey = false) {
 function muted(v) {
   var nextMuted = !v.muted;
   v.muted = nextMuted;
-  if (!isOnYouTube()) return;
-  var ytApi = getYouTubePlayerApi(v);
-  if (!ytApi) return;
-  if (nextMuted && typeof ytApi.mute === "function") ytApi.mute();
-  if (!nextMuted && typeof ytApi.unMute === "function") ytApi.unMute();
+  try {
+    var ytApi = getYouTubePlayerApi(v);
+    if (!ytApi) return;
+    var setMuted = nextMuted ? ytApi.mute : ytApi.unMute;
+    if (typeof setMuted === "function") setMuted.call(ytApi);
+  } catch (e) {
+    log("YouTube native mute failed", 3);
+  }
 }
 
 function getYouTubePlayerApi(video) {
   if (!isOnYouTube()) return null;
-  var playerEl =
-    (video && video.closest ? video.closest(".html5-video-player") : null) ||
-    document.getElementById("movie_player") ||
-    document.querySelector(".html5-video-player");
-  if (!playerEl) return null;
-  return playerEl.wrappedJSObject || playerEl;
+  try {
+    var playerEl =
+      (video && typeof video.closest === "function"
+        ? video.closest(".html5-video-player") : null) ||
+      document.getElementById("movie_player") ||
+      document.querySelector(".html5-video-player");
+    if (!playerEl) return null;
+    return playerEl.wrappedJSObject || playerEl;
+  } catch (e) {
+    log("YouTube native player unavailable", 3);
+    return null;
+  }
 }
 
 function syncYouTubePlayerVolume(video, volume) {
-  var ytApi = getYouTubePlayerApi(video);
-  if (!ytApi || typeof ytApi.setVolume !== "function") return;
-  ytApi.setVolume(Math.round(volume * 100));
-  if (volume > 0 && typeof ytApi.unMute === "function") {
-    ytApi.unMute();
+  if (typeof volume !== "number" || !isFinite(volume) || volume < 0 || volume > 1) return;
+  // Keep YouTube's controls in sync; page methods receive only validated
+  // primitives on YouTube hosts, and failures leave native media controls usable.
+  try {
+    var ytApi = getYouTubePlayerApi(video);
+    if (!ytApi) return;
+    var setVolume = ytApi.setVolume;
+    if (typeof setVolume !== "function") return;
+    setVolume.call(ytApi, Math.round(volume * 100));
+    if (volume > 0) {
+      var unMute = ytApi.unMute;
+      if (typeof unMute === "function") unMute.call(ytApi);
+    }
+  } catch (e) {
+    log("YouTube native volume failed", 3);
   }
 }
 
@@ -5142,6 +6346,8 @@ function jumpToMark(v) {
 
 function handleDrag(video, e) {
   const c = video.vsc.div;
+  const dragController = video.vsc;
+  if (dragController.dragCleanup) dragController.dragCleanup();
   const sC = convertControllerToManualPosition(video.vsc);
   if (!sC) return;
   var pE =
@@ -5180,7 +6386,11 @@ function handleDrag(video, e) {
     pE.removeEventListener("mouseleave", eD);
     sC.classList.remove("dragging");
     video.classList.remove("vcs-dragging");
+    if (dragController.dragCleanup === eD) {
+      dragController.dragCleanup = null;
+    }
   };
+  dragController.dragCleanup = eD;
   pE.addEventListener("mouseup", eD);
   pE.addEventListener("mouseleave", eD);
   pE.addEventListener("mousemove", sD);
@@ -5217,19 +6427,63 @@ function showController(controller, duration = 2000, forced = false) {
 // Keep each controller inside the subtree promoted to the fullscreen top layer,
 // then restore its normal player-local mount when fullscreen exits.
 function handleFullscreenControllerTransition() {
-  tc.mediaElements.forEach((video) => {
+  tc.mediaElements.forEach(function(video) {
     if (video.vsc) {
-      syncControllerFullscreenMount(video.vsc);
-      applyControllerLocation(video.vsc, video.vsc.controllerLocation);
+      scheduleControllerFullscreenSettle(video.vsc);
     }
   });
 }
 
-[
-  "fullscreenchange",
-  "webkitfullscreenchange",
-  "mozfullscreenchange",
-  "MSFullscreenChange"
-].forEach(function(eventName) {
-  document.addEventListener(eventName, handleFullscreenControllerTransition);
-});
+function cleanupControllerFullscreenSettle(controller) {
+  var win = controller.video.ownerDocument.defaultView || window;
+  if (controller.fullscreenSettleFrame != null) {
+    win.cancelAnimationFrame(controller.fullscreenSettleFrame);
+    controller.fullscreenSettleFrame = null;
+  }
+  (controller.fullscreenSettleTimers || []).forEach(function(timer) {
+    win.clearTimeout(timer);
+  });
+  controller.fullscreenSettleTimers = [];
+}
+
+function scheduleControllerFullscreenSettle(controller) {
+  cleanupControllerFullscreenSettle(controller);
+  var win = controller.video.ownerDocument.defaultView || window;
+  var settle = function() {
+    if (controller.video.vsc !== controller || !controller.video.isConnected) return;
+    // Re-evaluate ownership each time: players can move or resize after the
+    // fullscreen animation, and a closed popover is no longer in the top layer.
+    syncControllerFullscreenMount(controller);
+    configureControllerAutoHide(controller, controller.div, false);
+    if (isOnYouTube()) {
+      controller.div.classList.remove("vsc-idle-hidden");
+      if (controller.syncYouTubeAutoHide) controller.syncYouTubeAutoHide();
+    }
+    if (controller.controllerHostResetGeometry) controller.controllerHostResetGeometry();
+    var element = getControllerElement(controller);
+    if (element && element.dataset.positionMode !== "manual") {
+      applyControllerLocation(controller, controller.controllerLocation);
+    }
+  };
+  settle();
+  controller.fullscreenSettleFrame = win.requestAnimationFrame(function() {
+    controller.fullscreenSettleFrame = null;
+    settle();
+  });
+  controller.fullscreenSettleTimers = [150, 400, 900, 1600].map(function(delay) {
+    return win.setTimeout(settle, delay);
+  });
+}
+
+function attachFullscreenListeners(doc) {
+  if (!doc || doc.vscFullscreenListenersAttached) return;
+  [
+    "fullscreenchange",
+    "webkitfullscreenchange",
+    "mozfullscreenchange",
+    "MSFullscreenChange"
+  ].forEach(function(eventName) {
+    doc.addEventListener(eventName, handleFullscreenControllerTransition);
+  });
+  doc.vscFullscreenListenersAttached = true;
+}

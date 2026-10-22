@@ -12,6 +12,7 @@ async function setupImportExport(overrides = {}) {
   const restoreSpy = vi.fn();
   globalThis.restore_options = restoreSpy;
   window.restore_options = restoreSpy;
+  loadScript("extension/shared/ui-icons.js");
   loadScript("extension/shared/settings-core.js");
   loadScript("extension/shared/import-export.js");
   loadScript("extension/options/import-export.js");
@@ -44,7 +45,8 @@ describe("import/export flows", () => {
 
   it("exports sync and local settings as a JSON download", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 3, 4, 8, 9, 10));
+    const exportTime = new Date(2026, 3, 4, 8, 9, 10);
+    vi.setSystemTime(exportTime);
     const chrome = await setupImportExport({
       sync: { rememberSpeed: true, shortcutTargetMode: "all" },
       local: { customButtonIcons: { faster: { slug: "rocket" } } }
@@ -89,7 +91,7 @@ describe("import/export flows", () => {
     const blobText = await capturedBlob.text();
     expect(JSON.parse(blobText)).toEqual({
       version: "1.1",
-      exportDate: "2026-04-04T12:09:10.000Z",
+      exportDate: exportTime.toISOString(),
       settings: {
         rememberSpeed: true,
         shortcutTargetMode: "all",
@@ -193,7 +195,7 @@ describe("import/export flows", () => {
           {
             __text: JSON.stringify({
               settings: { rememberSpeed: true },
-              localSettings: { customButtonIcons: { faster: { slug: "rocket" } } }
+              localSettings: { customButtonIcons: { faster: { slug: "rocket", svg: "<svg/>" } } }
             })
           }
         ]
@@ -201,7 +203,7 @@ describe("import/export flows", () => {
     });
 
     expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      { customButtonIcons: { faster: { slug: "rocket" } } },
+      { customButtonIcons: { faster: { slug: "rocket", svg: "<svg/>" } } },
       expect.any(Function)
     );
     expect(chrome.storage.sync.clear).not.toHaveBeenCalled();

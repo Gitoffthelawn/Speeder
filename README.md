@@ -56,16 +56,32 @@ settings page, as well as add additional shortcut keys to match your
 preferences. For example, you can assign multiple different "preferred speed"
 shortcuts with different values, which will allow you to quickly toggle between
 your most commonly used speeds. To add a new shortcut, open extension settings
-and click "Add New".
+and choose an action from "Add shortcut…".
 
 <img width="1760" height="1330" alt="image" src="https://github.com/user-attachments/assets/32e814dd-93ea-4943-8ec9-3eca735447ac" />
 
-Some sites may assign other functionality to one of the assigned shortcut keys —
-these collisions are inevitable, unfortunately. As a workaround, the extension
-listens both for lower and upper case values (i.e. you can use
-`Shift-<shortcut>`) if there is other functionality assigned to the lowercase
-key. This is not a perfect solution, as some sites may listen to both, but works
-most of the time.
+Some sites may assign other functionality to one of the assigned shortcut keys.
+You can record `Shift+<shortcut>` as a separate, exact binding, or use a site
+rule to block the site from capturing a particular Speeder shortcut. Shift is
+not applied automatically to an unshifted binding.
+
+## Privacy & security
+
+Speeder makes no network requests: icons and other assets are bundled with the
+extension. Settings stay in Firefox extension storage; Firefox manages settings
+sync. External support and documentation links open only when clicked.
+
+On YouTube, Firefox's `wrappedJSObject` lets Speeder call the page player's speed,
+volume, and mute methods so YouTube's native controls stay in sync. Calls pass
+only validated numbers or no arguments, and failures retain the media fallback.
+
+Known Cloudflare challenge documents are excluded. When challenge scripts or
+frames appear on an ordinary page, Speeder suspends its page API hooks and
+restores hooks it still owns. Detection can happen after page startup; it does
+not guarantee compatibility with every challenge page.
+
+Disabling Speeder for a site (or globally) also removes its page API hooks, so a
+disabled page runs without any Speeder changes to page-visible APIs.
 
 ## Development
 
@@ -74,19 +90,18 @@ The unpacked extension root is `extension/`. Load that directory in
 
 ```sh
 npm test
-npx --yes web-ext lint --source-dir extension
+npm run build:lucide # regenerate bundled icons after installing dependencies
+npx --yes web-ext@10.6.0 lint --source-dir extension
 ```
 
 ## FAQ
 
 ### The video controls are not showing up?
 
-This extension is only compatible
-with HTML5 video. If you don't see the controls showing up, chances are you are
-viewing a Flash video. If you want to confirm, try right-clicking on the video
-and inspect the menu: if it mentions flash, then that's the issue. That said,
-most sites will fallback to HTML5 if they detect that Flash is not available.
-You can try manually disabling Flash from the browser.
+Speeder works with HTML5 video and, when enabled in settings, HTML5 audio. Check
+that Speeder is enabled for the current site, then use the popup's "Rescan page
+for videos" action after a player loads dynamically. Browser-internal pages and
+players that do not expose HTML5 media to extensions cannot be controlled.
 
 ### What is this fork all about?
 

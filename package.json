@@ -3,10 +3,13 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:browser": "python3 tests/browser/run.py",
+    "build:lucide": "node scripts/build-lucide-icons.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.1.0",
-    "vitest": "^3.2.4"
+    "lucide-static": "1.7.0",
+    "vitest": "^4.1.12"
   }
 }

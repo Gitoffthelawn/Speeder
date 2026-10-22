@@ -33,6 +33,7 @@ function bootOptions(options) {
   evaluateScript("extension/shared/controller-utils.js");
   evaluateScript("extension/shared/key-bindings.js");
   evaluateScript("extension/shared/settings-core.js");
+  evaluateScript("extension/shared/site-rules.js");
   evaluateScript("extension/shared/popup-controls.js");
   evaluateScript("extension/shared/ui-icons.js");
   evaluateScript("extension/options/lucide-client.js");
@@ -82,6 +83,42 @@ describe("options.js", () => {
 
     expect(chrome.storage.sync._dump().rememberSpeed).toBe(true);
     expect(document.getElementById("status").textContent).toBe("Auto-saved");
+  });
+
+  it("copies privacy-safe diagnostics from settings", async () => {
+    bootOptions({
+      syncData: {
+        enabled: false,
+        rememberSpeed: true,
+        siteRules: [
+          {
+            title: "Private account",
+            pattern: "secret.example/private-token",
+            enabled: true
+          }
+        ]
+      }
+    });
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    await flushAsyncWork(3);
+
+    document.getElementById("copyDiagnostics").click();
+    await flushAsyncWork(3);
+
+    const reportText = writeText.mock.calls[0][0];
+    const report = JSON.parse(reportText);
+    expect(report.globalSettings.enabled).toBe(false);
+    expect(report.globalSettings.rememberSpeed).toBe(true);
+    expect(report.page).toEqual({ protocol: null, hostname: null });
+    expect(report.matchedSiteRule.matched).toBe(false);
+    expect(report.frame).toBeNull();
+    expect(reportText).not.toContain("Private account");
+    expect(reportText).not.toContain("private-token");
+    expect(document.getElementById("status").textContent).toContain("copied");
   });
 
   it("does not partially save options when a required site shortcut is invalid", async () => {

@@ -40,6 +40,7 @@ async function bootInject({ sync = {}, local = {} } = {}) {
 
   loadScript("extension/shared/controller-utils.js");
   loadScript("extension/shared/key-bindings.js");
+  loadScript("extension/shared/settings-core.js");
   loadScript("extension/shared/site-rules.js");
   loadScript("extension/shared/ui-icons.js");
   loadScript("extension/content/inject.js");
@@ -245,6 +246,7 @@ describe("inject runtime", () => {
 
     loadScript("extension/shared/controller-utils.js");
     loadScript("extension/shared/key-bindings.js");
+    loadScript("extension/shared/settings-core.js");
     loadScript("extension/shared/site-rules.js");
     loadScript("extension/shared/ui-icons.js");
     loadScript("extension/content/inject.js");

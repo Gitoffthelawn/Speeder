@@ -1,9 +1,9 @@
-var regStrip = /^[\r\t\f\v ]+|[\r\t\f\v ]+$/gm;
 var speederShared =
   typeof SpeederShared === "object" && SpeederShared ? SpeederShared : {};
 var controllerUtils = speederShared.controllerUtils || {};
 var keyBindingUtils = speederShared.keyBindings || {};
 var popupControlUtils = speederShared.popupControls || {};
+var siteRuleUtils = speederShared.siteRules || {};
 
 var keyBindings = [];
 
@@ -51,19 +51,6 @@ var modifierKeys = new Set([
   "OS",
   "Shift"
 ]);
-
-var controllerLocations = Array.isArray(controllerUtils.controllerLocations)
-  ? controllerUtils.controllerLocations.slice()
-  : [
-    "top-left",
-    "top-center",
-    "top-right",
-    "middle-right",
-    "bottom-right",
-    "bottom-center",
-    "bottom-left",
-    "middle-left"
-  ];
 
 var controllerButtonDefs = {
   rewind:   { icon: "\u00AB", name: "Rewind" },
@@ -215,28 +202,7 @@ function persistManagedSyncSettings(settings, callback, existingStorage) {
       completeSettings
     );
 
-    function removeStaleKeys() {
-      if (!mutation.remove.length) {
-        callback(null);
-        return;
-      }
-      chrome.storage.sync.remove(mutation.remove, function () {
-        callback(chrome.runtime.lastError || null);
-      });
-    }
-
-    if (Object.keys(mutation.set).length === 0) {
-      removeStaleKeys();
-      return;
-    }
-
-    chrome.storage.sync.set(mutation.set, function () {
-      if (chrome.runtime.lastError) {
-        callback(chrome.runtime.lastError);
-        return;
-      }
-      removeStaleKeys();
-    });
+    vscWriteManagedStorageMutation(mutation, callback);
   }
 
   if (existingStorage && typeof existingStorage === "object") {
@@ -504,22 +470,6 @@ function syncSiteRuleField(ruleEl, rule, key, isCheckbox) {
   else input.value = value;
 }
 
-function normalizeBindingKey(key) {
-  return keyBindingUtils.normalizeBindingKey(key);
-}
-
-function getLegacyKeyCode(binding) {
-  return keyBindingUtils.getLegacyKeyCode(binding);
-}
-
-function legacyBindingKeyToCode(key) {
-  return keyBindingUtils.legacyBindingKeyToCode(key);
-}
-
-function legacyKeyCodeToCode(keyCode) {
-  return keyBindingUtils.legacyKeyCodeToCode(keyCode);
-}
-
 function inferBindingCode(binding, fallbackCode) {
   return keyBindingUtils.inferBindingCode(binding, fallbackCode);
 }
@@ -663,13 +613,18 @@ function updateCustomShortcutInputText(inputItem, bindingOrKeyCode) {
   );
 }
 
-function appendSelectOptions(select, options) {
-  options.forEach(function (optionData) {
-    var option = document.createElement("option");
-    option.value = optionData.value;
-    option.textContent = optionData.label;
-    select.appendChild(option);
-  });
+function labelShortcutRow(row) {
+  if (!row) return;
+  var action = row.dataset.action;
+  var name = actionLabels[action] || action || "Shortcut";
+  var keyInput = row.querySelector(".customKey");
+  var valueInput = row.querySelector(".customValue");
+  var removeButton = row.querySelector(".removeParent");
+  if (keyInput) keyInput.setAttribute("aria-label", name + " key");
+  if (valueInput) valueInput.setAttribute("aria-label", name + " value");
+  if (removeButton) {
+    removeButton.setAttribute("aria-label", "Remove " + name + " shortcut");
+  }
 }
 
 function add_shortcut(action, value) {
@@ -711,6 +666,7 @@ function add_shortcut(action, value) {
   div.appendChild(keyInput);
   div.appendChild(valueInput);
   div.appendChild(removeButton);
+  labelShortcutRow(div);
 
   var customsElement = document.querySelector(".shortcuts-grid");
   customsElement.appendChild(div);
@@ -787,21 +743,10 @@ function validate() {
   
   // Validate site rules patterns
   document.querySelectorAll(".site-rule").forEach((ruleEl) => {
-    var pattern = ruleEl.querySelector(".site-pattern").value.trim();
-    if (pattern.length === 0) return;
-    
-    if (pattern.startsWith("/")) {
-      try {
-        var lastSlash = pattern.lastIndexOf("/");
-        if (lastSlash > 0) {
-          new RegExp(pattern.substring(1, lastSlash), pattern.substring(lastSlash + 1));
-        }
-      } catch (err) {
-        status.textContent =
-          "Error: Invalid site rule regex: " + pattern + ". Unable to save";
-        valid = false;
-        return;
-      }
+    var result = updateSiteRulePatternFeedback(ruleEl);
+    if (!result.valid) {
+      status.textContent = "Error: " + result.error + " Unable to save";
+      valid = false;
     }
   });
   
@@ -852,11 +797,8 @@ function save_options(isAutoSave) {
   settings.hideWithControlsTimer =
     Math.min(15, Math.max(0.1, parseFloat(document.getElementById("hideWithControlsTimer").value) || tcDefaults.hideWithControlsTimer));
 
-  // Sync back to the legacy key if it exists, for backward compatibility
+  // Keep the in-memory legacy alias aligned; storage diffs omit it.
   settings.hideWithYouTubeControls = settings.hideWithControls;
-
-  if (settings.hideWithControlsTimer < 0.1) settings.hideWithControlsTimer = 0.1;
-  if (settings.hideWithControlsTimer > 15) settings.hideWithControlsTimer = 15;
 
   settings.controllerLocation = normalizeControllerLocation(
     document.getElementById("controllerLocation").value
@@ -1145,15 +1087,7 @@ function addSiteRuleShortcut(rowsEl, action, binding, value, force) {
 
   var actionLabel = document.createElement("div");
   actionLabel.className = "shortcut-label";
-  var actionLabelText = actionLabels[action] || action;
-  if (action === "toggleSubtitleNudge") {
-    var ruleEl = rowsEl.closest(".site-rule");
-    var pattern = ruleEl ? ruleEl.querySelector(".site-pattern").value : "";
-    if (!pattern.toLowerCase().includes("youtube.com")) {
-      actionLabelText += " (only for YouTube embeds)";
-    }
-  }
-  actionLabel.textContent = actionLabelText;
+  actionLabel.textContent = actionLabels[action] || action;
 
   var keyInput = document.createElement("input");
   keyInput.className = "customKey";
@@ -1201,8 +1135,54 @@ function addSiteRuleShortcut(rowsEl, action, binding, value, force) {
   div.appendChild(valueInput);
   div.appendChild(forceLabel);
   div.appendChild(removeButton);
+  labelShortcutRow(div);
 
   rowsEl.appendChild(div);
+}
+
+var siteRuleControlId = 0;
+
+function updateSiteRulePatternFeedback(ruleEl) {
+  var input = ruleEl.querySelector(".site-pattern");
+  var feedback = ruleEl.querySelector(".site-pattern-feedback");
+  // Empty rows are ignored when saving, as they are when adding a new rule.
+  var result = input.value.trim().length === 0
+    ? { valid: true, error: "", warning: "" }
+    : siteRuleUtils.validateSiteRulePattern(input.value);
+  input.setAttribute("aria-invalid", result.valid ? "false" : "true");
+  if (feedback) {
+    feedback.textContent = result.error || result.warning;
+    feedback.hidden = !feedback.textContent;
+    feedback.classList.toggle("site-pattern-error", !result.valid);
+  }
+  return result;
+}
+
+function associateSiteRuleLabels(ruleEl) {
+  ruleEl.querySelectorAll(".site-rule-option").forEach(function(option) {
+    var label = Array.from(option.children).find(function(child) {
+      return child.tagName === "LABEL";
+    });
+    var controls = option.querySelectorAll("input, select, textarea");
+    if (!label || controls.length !== 1 || label.contains(controls[0])) return;
+    controls[0].id = "site-rule-control-" + ++siteRuleControlId;
+    label.htmlFor = controls[0].id;
+  });
+
+  ruleEl.querySelectorAll(".margin-pad-cell").forEach(function(cell) {
+    var input = cell.querySelector("input");
+    var miniLabel = cell.querySelector(".margin-pad-mini");
+    if (input && miniLabel) {
+      input.setAttribute(
+        "aria-label",
+        "Controller margin " +
+          (miniLabel.textContent === "T" ? "top" : "bottom")
+      );
+    }
+  });
+
+  var removeRule = ruleEl.querySelector(".remove-site-rule");
+  if (removeRule) removeRule.setAttribute("aria-label", "Remove site rule");
 }
 
 function createSiteRule(rule) {
@@ -1212,7 +1192,17 @@ function createSiteRule(rule) {
   ruleEl.vscOriginalRule = vscClonePlainData(rule) || {};
 
   var pattern = rule && rule.pattern ? rule.pattern : "";
-  ruleEl.querySelector(".site-pattern").value = pattern;
+  var patternInput = ruleEl.querySelector(".site-pattern");
+  patternInput.value = pattern;
+  var patternFeedback = ruleEl.querySelector(".site-pattern-feedback");
+  if (patternFeedback) {
+    patternFeedback.id = "site-pattern-feedback-" + ++siteRuleControlId;
+    patternInput.setAttribute("aria-describedby", patternFeedback.id);
+  }
+  patternInput.addEventListener("input", function() {
+    updateSiteRulePatternFeedback(ruleEl);
+  });
+  updateSiteRulePatternFeedback(ruleEl);
   ruleEl.querySelector(".site-title").value =
     rule && typeof rule.title === "string" ? rule.title : "";
 
@@ -1377,6 +1367,7 @@ function createSiteRule(rule) {
   }
   applySiteRuleOverrideState(ruleEl, "override-shortcuts", "site-shortcuts-container");
   refreshSiteRuleAddShortcutSelector(ruleEl);
+  associateSiteRuleLabels(ruleEl);
 
   document.getElementById("siteRulesContainer").appendChild(ruleEl);
 }
@@ -1385,7 +1376,8 @@ function createControlBarBlock(buttonId) {
   var def = controllerButtonDefs[buttonId];
   if (!def) return null;
 
-  var block = document.createElement("div");
+  var block = document.createElement("button");
+  block.type = "button";
   block.className = "cb-block";
   block.dataset.buttonId = buttonId;
   block.draggable = true;
@@ -1408,6 +1400,25 @@ function createControlBarBlock(buttonId) {
   return block;
 }
 
+function updateControlBarBlockLabels(editor) {
+  if (!editor) return;
+  editor.querySelectorAll(".cb-dropzone").forEach(function(zone) {
+    var state = zone.classList.contains("cb-active-zone")
+      ? "active"
+      : "available";
+    zone.querySelectorAll(".cb-block").forEach(function(block) {
+      var def = controllerButtonDefs[block.dataset.buttonId];
+      block.setAttribute(
+        "aria-label",
+        (def ? def.name : block.dataset.buttonId) +
+          ", " +
+          state +
+          ". Press Enter to move; use arrow keys to reorder."
+      );
+    });
+  });
+}
+
 function populateControlBarZones(activeZone, availableZone, activeIds, allowButtonId) {
   vscClearElement(activeZone);
   vscClearElement(availableZone);
@@ -1423,13 +1434,15 @@ function populateControlBarZones(activeZone, availableZone, activeIds, allowButt
     if (block) activeZone.appendChild(block);
   });
 
-  Object.keys(controllerButtonDefs).forEach(function (id) {
+  vscGetButtonIds().forEach(function (id) {
     if (!allowed(id)) return;
     if (!activeIds.includes(id)) {
       var block = createControlBarBlock(id);
       if (block) availableZone.appendChild(block);
     }
   });
+
+  updateControlBarBlockLabels(activeZone.closest(".cb-editor"));
 }
 
 function readControlBarOrder(activeZone) {
@@ -1473,11 +1486,11 @@ function updatePopupEditorDisabledState() {
   var checkbox = document.getElementById("popupMatchHoverControls");
   var wrap = document.getElementById("popupCbEditorWrap");
   if (!checkbox || !wrap) return;
-  if (checkbox.checked) {
-    wrap.classList.add("cb-editor-disabled");
-  } else {
-    wrap.classList.remove("cb-editor-disabled");
-  }
+  wrap.classList.toggle("cb-editor-disabled", checkbox.checked);
+  wrap.querySelectorAll(".cb-block").forEach(function(block) {
+    block.disabled = checkbox.checked;
+    block.draggable = !checkbox.checked;
+  });
 }
 
 function getDragAfterElement(container, x, y) {
@@ -1500,6 +1513,8 @@ function getDragAfterElement(container, x, y) {
 }
 
 function initControlBarEditor() {
+  if (document.vscControlBarEditorInitialized) return;
+  document.vscControlBarEditorInitialized = true;
   var draggedBlock = null;
 
   function clearControlBarDropTargets(activeZone) {
@@ -1512,7 +1527,7 @@ function initControlBarEditor() {
 
   document.addEventListener("dragstart", function (e) {
     var block = e.target.closest(".cb-block");
-    if (!block) return;
+    if (!block || block.disabled) return;
     draggedBlock = block;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", block.dataset.buttonId);
@@ -1557,10 +1572,48 @@ function initControlBarEditor() {
     var zone = e.target.closest(".cb-dropzone");
     if (zone) {
       e.preventDefault();
+      updateControlBarBlockLabels(zone.closest(".cb-editor"));
       scheduleAutoSave();
     }
 
     clearControlBarDropTargets(null);
+  });
+
+  document.addEventListener("click", function(e) {
+    var block = e.target.closest ? e.target.closest(".cb-block") : null;
+    if (!block || block.disabled) return;
+    var editor = block.closest(".cb-editor");
+    var currentZone = block.closest(".cb-dropzone");
+    if (!editor || !currentZone) return;
+    var otherZone = editor.querySelector(
+      currentZone.classList.contains("cb-active-zone")
+        ? ".cb-available-zone"
+        : ".cb-active-zone"
+    );
+    if (!otherZone) return;
+    otherZone.appendChild(block);
+    updateControlBarBlockLabels(editor);
+    block.focus();
+    scheduleAutoSave();
+  });
+
+  document.addEventListener("keydown", function(e) {
+    var block = e.target.closest ? e.target.closest(".cb-block") : null;
+    if (!block || block.disabled) return;
+    var previous = e.key === "ArrowLeft" || e.key === "ArrowUp";
+    var next = e.key === "ArrowRight" || e.key === "ArrowDown";
+    if (!previous && !next) return;
+    var sibling = previous ? block.previousElementSibling : block.nextElementSibling;
+    if (!sibling) return;
+    e.preventDefault();
+    if (previous) {
+      block.parentNode.insertBefore(block, sibling);
+    } else {
+      block.parentNode.insertBefore(block, sibling.nextElementSibling);
+    }
+    updateControlBarBlockLabels(block.closest(".cb-editor"));
+    block.focus();
+    scheduleAutoSave();
   });
 }
 
@@ -1581,6 +1634,7 @@ function repaintAllCbIconsFromCustomMap() {
 }
 
 function persistCustomButtonIcons(map, callback) {
+  map = vscNormalizeLocalSettings({ customButtonIcons: map }).customButtonIcons;
   chrome.storage.local.set({ customButtonIcons: map }, function () {
     if (chrome.runtime.lastError) {
       setLucideStatus(
@@ -1605,7 +1659,7 @@ function initLucideButtonIconsUI() {
   if (!actionSel.dataset.lucideInit) {
     actionSel.dataset.lucideInit = "1";
     vscClearElement(actionSel);
-    Object.keys(controllerButtonDefs).forEach(function (aid) {
+    vscGetButtonIds().forEach(function (aid) {
       if (aid === "nudge") {
         Object.keys(lucideSubtitleNudgeActionLabels).forEach(function (subId) {
           var o2 = document.createElement("option");
@@ -1633,6 +1687,10 @@ function initLucideButtonIconsUI() {
       b.dataset.slug = slug;
       b.title = slug;
       b.setAttribute("aria-label", slug);
+      b.setAttribute(
+        "aria-pressed",
+        slug === lucidePickerSelectedSlug ? "true" : "false"
+      );
       if (slug === lucidePickerSelectedSlug) {
         b.classList.add("lucide-picked");
       }
@@ -1654,6 +1712,10 @@ function initLucideButtonIconsUI() {
           resultsEl.querySelectorAll("button"),
           function (x) {
             x.classList.toggle("lucide-picked", x.dataset.slug === slug);
+            x.setAttribute(
+              "aria-pressed",
+              x.dataset.slug === slug ? "true" : "false"
+            );
           }
         );
         fetchLucideSvg(slug)
@@ -1719,7 +1781,7 @@ function initLucideButtonIconsUI() {
                 slug +
                 " for " +
                 action +
-                ". Reload pages for the hover bar."
+                ". Open pages update automatically."
             );
           });
         })
@@ -1783,13 +1845,9 @@ function restore_options(callback) {
     var storage = vscExpandStoredSettings(rawStorage || {});
     chrome.storage.local.get(["customButtonIcons"], function (loc) {
       var localError = chrome.runtime.lastError;
-      customButtonIconsLive =
-        !localError &&
-        loc &&
-        loc.customButtonIcons &&
-        typeof loc.customButtonIcons === "object"
-          ? loc.customButtonIcons
-          : {};
+      customButtonIconsLive = vscNormalizeLocalSettings({
+        customButtonIcons: !localError && loc ? loc.customButtonIcons || {} : {}
+      }).customButtonIcons;
 
     document.getElementById("rememberSpeed").checked = storage.rememberSpeed;
     document.getElementById("forceLastSavedSpeed").checked =
@@ -1902,6 +1960,13 @@ function restore_options(callback) {
 }
 
 function restore_defaults() {
+  if (
+    !window.confirm(
+      "Restore all defaults? This removes saved preferences, remembered speeds, and custom icons."
+    )
+  ) {
+    return;
+  }
   var status = document.getElementById("status");
   var restoreButton = document.getElementById("restore");
   setOptionsSyncSettingsLoaded(false);
@@ -1981,6 +2046,8 @@ document.addEventListener("DOMContentLoaded", function () {
     versionElement.textContent = manifest.version;
   }
 
+  document.querySelectorAll("#customs .shortcut-row").forEach(labelShortcutRow);
+
   restore_options();
   initControlBarEditor();
 
@@ -1988,6 +2055,41 @@ document.addEventListener("DOMContentLoaded", function () {
     .addEventListener("change", updatePopupEditorDisabledState);
 
   document.getElementById("save").addEventListener("click", save_options);
+  document.getElementById("copyDiagnostics").addEventListener("click", function () {
+    var status = document.getElementById("status");
+    if (
+      !navigator.clipboard ||
+      typeof navigator.clipboard.writeText !== "function"
+    ) {
+      status.textContent = "Clipboard access is unavailable.";
+      return;
+    }
+    var report = popupControlUtils.buildDiagnosticReport({
+      speederVersion: manifest.version,
+      browser: navigator.userAgent,
+      platform: navigator.platform || null,
+      storage: {
+        enabled: document.getElementById("enabled").checked,
+        rememberSpeed: document.getElementById("rememberSpeed").checked,
+        forceLastSavedSpeed:
+          document.getElementById("forceLastSavedSpeed").checked,
+        audioBoolean: document.getElementById("audioBoolean").checked,
+        startHidden: document.getElementById("startHidden").checked,
+        hideWithControls: document.getElementById("hideWithControls").checked,
+        controllerLocation: document.getElementById("controllerLocation").value,
+        shortcutTargetMode:
+          document.getElementById("shortcutTargetMode").value
+      }
+    });
+    navigator.clipboard.writeText(report).then(
+      function() {
+        status.textContent = "Diagnostics copied. Review before sharing.";
+      },
+      function() {
+        status.textContent = "Could not copy diagnostics.";
+      }
+    );
+  });
   
   const addSelector = document.getElementById("addShortcutSelector");
   if (addSelector) {

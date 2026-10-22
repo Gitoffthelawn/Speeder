@@ -24,6 +24,12 @@
           type="button"
           aria-pressed="false"
         >Force last saved speed</button>
+        <button
+          id="pauseTab"
+          class="popup-compact-action"
+          type="button"
+          aria-pressed="false"
+        >Pause on this tab</button>
         <div class="popup-divider"></div>
         <div id="popupControlBar" class="popup-control-bar">
           <span id="popupSpeed" class="popup-speed">1.00</span>
@@ -32,10 +38,17 @@
         <button id="enable" class="hide">Enable</button>
         <button id="disable">Disable</button>
       </div>
-      <div id="status" class="popup-status hide"></div>
+      <div
+        id="status"
+        class="popup-status hide"
+        role="status"
+        aria-live="polite"
+      ></div>
       <div class="popup-links">
         <button id="config">Settings</button>
         <div class="popup-secondary">
+          <button id="addSiteRule" class="secondary">Add current site</button>
+          <button id="copyDiagnostics" class="secondary">Copy diagnostics</button>
           <button id="feedback" class="secondary">Feedback</button>
           <button id="about" class="secondary">About</button>
         </div>

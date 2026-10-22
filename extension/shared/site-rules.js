@@ -9,6 +9,7 @@
   root.SpeederShared.siteRules = exports;
 })(typeof globalThis !== "undefined" ? globalThis : this, function() {
   var regStrip = /^[\r\t\f\v ]+|[\r\t\f\v ]+$/gm;
+  var MAX_SITE_RULE_PATTERN_LENGTH = 2048;
 
   function escapeStringRegExp(str) {
     return String(str).replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
@@ -192,10 +193,20 @@
   }
 
   function compileSiteRulePattern(pattern) {
-    if (typeof pattern !== "string") return null;
+    if (
+      typeof pattern !== "string" ||
+      pattern.length > MAX_SITE_RULE_PATTERN_LENGTH
+    ) return null;
 
     var normalizedPattern = pattern.replace(regStrip, "");
     if (normalizedPattern.length === 0) return null;
+
+    if (
+      normalizedPattern.startsWith("/") &&
+      normalizedPattern.lastIndexOf("/") === 0
+    ) {
+      return null;
+    }
 
     if (
       normalizedPattern.startsWith("/") &&
@@ -233,6 +244,102 @@
       test: function(url) {
         return plainSitePatternMatchesUrl(normalizedPattern, url);
       }
+    };
+  }
+
+  // Advisory only: recognize repeated groups containing variable repetition.
+  // Walk escapes/classes rather than treating literal punctuation as operators.
+  // This deliberately does not attempt to prove that a regex is safe or unsafe.
+  function hasNestedQuantifier(source) {
+    var groups = [{ variableRepetition: false }];
+    var inClass = false;
+
+    function repetitionAt(index) {
+      var character = source.charAt(index);
+      if (character === "*" || character === "+") {
+        return { repeated: true, variable: true };
+      }
+      if (character !== "{") return null;
+      var match = /^\{(\d+)(?:,(\d*))?\}/.exec(source.substring(index));
+      if (!match) return null;
+      var minimum = Number(match[1]);
+      var maximum = match[2] === undefined
+        ? minimum
+        : match[2] === "" ? Infinity : Number(match[2]);
+      return { repeated: maximum > 1, variable: maximum > minimum };
+    }
+
+    for (var i = 0; i < source.length; i++) {
+      var character = source.charAt(i);
+      if (character === "\\") {
+        i += 1;
+        continue;
+      }
+      if (character === "[" && !inClass) {
+        inClass = true;
+        continue;
+      }
+      if (inClass) {
+        if (character === "]") inClass = false;
+        continue;
+      }
+      if (character === "(") {
+        groups.push({ variableRepetition: false });
+      } else if (character === ")" && groups.length > 1) {
+        var group = groups.pop();
+        var outerRepetition = repetitionAt(i + 1);
+        if (group.variableRepetition && outerRepetition && outerRepetition.repeated) {
+          return true;
+        }
+        if (group.variableRepetition) {
+          groups[groups.length - 1].variableRepetition = true;
+        }
+      } else {
+        var repetition = repetitionAt(i);
+        if (repetition && repetition.variable) {
+          groups[groups.length - 1].variableRepetition = true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function validateSiteRulePattern(pattern) {
+    if (typeof pattern !== "string") {
+      return { valid: false, error: "Site rule pattern must be text.", warning: "" };
+    }
+    if (pattern.length > MAX_SITE_RULE_PATTERN_LENGTH) {
+      return {
+        valid: false,
+        error: "Site rule patterns must be 2048 characters or fewer.",
+        warning: ""
+      };
+    }
+    var normalizedPattern = pattern.replace(regStrip, "");
+    var matcher;
+    try {
+      matcher = compileSiteRulePattern(pattern);
+    } catch (_error) {
+      // Invalid expressions must never be executed while validating a rule.
+    }
+    if (!matcher) {
+      return {
+        valid: false,
+        error: normalizedPattern.startsWith("/")
+          ? "Invalid site rule regex."
+          : "Site rule pattern cannot be empty.",
+        warning: ""
+      };
+    }
+    var lastSlash = normalizedPattern.lastIndexOf("/");
+    var nested = normalizedPattern.startsWith("/") && lastSlash > 0 &&
+      hasNestedQuantifier(normalizedPattern.substring(1, lastSlash));
+    return {
+      valid: true,
+      error: "",
+      warning: nested
+        ? "This regex contains nested quantifiers and may slow down page matching. Consider a simpler pattern."
+        : ""
     };
   }
 
@@ -302,6 +409,7 @@
   }
 
   return {
+    MAX_SITE_RULE_PATTERN_LENGTH: MAX_SITE_RULE_PATTERN_LENGTH,
     compileSiteRulePattern: compileSiteRulePattern,
     escapeStringRegExp: escapeStringRegExp,
     isSiteRuleDisabled: isSiteRuleDisabled,
@@ -309,6 +417,7 @@
     matchSiteRule: matchSiteRule,
     plainSitePatternMatchesUrl: plainSitePatternMatchesUrl,
     safelyDecodeUrlText: safelyDecodeUrlText,
-    siteRuleMatchesUrl: siteRuleMatchesUrl
+    siteRuleMatchesUrl: siteRuleMatchesUrl,
+    validateSiteRulePattern: validateSiteRulePattern
   };
 });

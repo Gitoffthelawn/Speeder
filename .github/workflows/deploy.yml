@@ -12,10 +12,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Install deps
-        run: npm install -g web-ext
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Install web-ext
+        run: npm install -g web-ext@10.6.0
 
       - name: Lint
         run: web-ext lint --source-dir extension
@@ -43,7 +54,7 @@ jobs:
 
       - name: Create GitHub Prerelease (beta)
         if: contains(github.ref_name, '-beta')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}

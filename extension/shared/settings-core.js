@@ -6,6 +6,17 @@
   var REMOVED_DEFAULT_RULE_KEYS_META = "removedDefaultRuleKeys";
   var MIN_SPEED = 0.1;
   var MAX_SPEED = 16;
+  var CONTROLLER_LOCATIONS = [
+    "top-left", "top-center", "top-right", "middle-right", "bottom-right",
+    "bottom-center", "bottom-left", "middle-left"
+  ];
+  var BUTTON_IDS = new Set([
+    "rewind", "slower", "faster", "advance", "display", "reset", "fast", "nudge",
+    "pause", "muted", "louder", "softer", "mark", "jump", "settings"
+  ]);
+  var KNOWN_ACTIONS = new Set(Array.from(BUTTON_IDS).concat([
+    "move", "blink", "drag", "toggleSubtitleNudge"
+  ]));
   var DEFAULT_BUTTONS = ["rewind", "slower", "faster", "advance", "display"];
   var LEGACY_SYNC_KEYS = [
     "resetSpeed",
@@ -321,6 +332,21 @@
     return Math.min(maximum, Math.max(minimum, numericValue));
   }
 
+  function normalizeButtonIds(value, fallback, popup) {
+    if (!Array.isArray(value)) return clonePlainData(fallback);
+    return value.filter(function(id, index) {
+      return BUTTON_IDS.has(id) && (!popup || id !== "settings") && value.indexOf(id) === index;
+    });
+  }
+
+  function normalizeLocation(value, fallback) {
+    return CONTROLLER_LOCATIONS.indexOf(value) !== -1 ? value : fallback;
+  }
+
+  function reportRepair(report, path, before, after) {
+    if (report && !areComparableValuesEqual(before, after)) report.push(path);
+  }
+
   var SITE_RULE_BOOLEAN_KEYS = new Set([
     "enabled",
     "startHidden",
@@ -374,7 +400,12 @@
         return shortcut;
       });
     }
-    return clonePlainData(value);
+    if (key === "controllerLocation") return normalizeLocation(value, DEFAULT_SETTINGS.controllerLocation);
+    if (key === "controllerButtons" || key === "popupControllerButtons") {
+      return Array.isArray(value) ? normalizeButtonIds(value, [], key === "popupControllerButtons") : undefined;
+    }
+    if (key === "subtitleNudgeAmount") return clampFiniteNumber(value, 0.000001, 0.1, undefined);
+    return undefined;
   }
 
   function normalizeSiteRule(rule) {
@@ -383,7 +414,7 @@
     }
 
     var pattern = typeof rule.pattern === "string" ? rule.pattern.trim() : "";
-    if (!pattern) {
+    if (!pattern || rule.pattern.length > 2048) {
       return null;
     }
 
@@ -642,8 +673,7 @@
   }
 
   function buildStoredSettingsDiff(currentSettings) {
-    var defaults = clonePlainData(DEFAULT_SETTINGS);
-    var normalized = deepMergeDefaults(defaults, currentSettings || {});
+    var normalized = expandStoredSettings(currentSettings || {}, null, true);
     var siteRuleData = compressSiteRules(normalized.siteRules, normalized);
     var diffDefaults = {};
     var diff = {};
@@ -680,7 +710,7 @@
   }
 
   function legacyKeyCodeToCode(keyCode) {
-    var numericCode = Number(keyCode);
+    var numericCode = finiteNumberOr(keyCode, NaN);
     if (!Number.isInteger(numericCode)) return null;
     if (numericCode >= 48 && numericCode <= 57) {
       return "Digit" + String.fromCharCode(numericCode);
@@ -725,47 +755,87 @@
   }
 
   function finiteNumberOr(value, fallback) {
-    var numericValue = Number(value);
-    return Number.isFinite(numericValue) ? numericValue : fallback;
+    try {
+      var numericValue = Number(value);
+      return Number.isFinite(numericValue) ? numericValue : fallback;
+    } catch (_error) {
+      return fallback;
+    }
   }
 
-  function sanitizeStoredBindingValues(bindings) {
-    var defaultValues = Object.create(null);
-    DEFAULT_SETTINGS.keyBindings.forEach(function(binding) {
-      defaultValues[binding.action] = Number(binding.value) || 0;
-    });
-    defaultValues.louder = 0.1;
-    defaultValues.softer = 0.1;
+  var defaultActionValues = {
+    slower: 0.1,
+    faster: 0.1,
+    rewind: 10,
+    advance: 10,
+    fast: 1.8,
+    louder: 0.1,
+    softer: 0.1
+  };
 
-    return (Array.isArray(bindings) ? bindings : [])
-      .filter(function(binding) {
-        return (
-          isPlainObject(binding) &&
-          typeof binding.action === "string" &&
-          binding.action.length > 0
-        );
-      })
-      .map(function(binding) {
-      var normalized = clonePlainData(binding) || {};
-      var action = normalized.action;
-      var value = Number(normalized.value);
-      var invalid = !Number.isFinite(value);
-      if (action === "slower" || action === "faster") {
-        invalid = invalid || value <= 0 || value > MAX_SPEED;
-      } else if (action === "fast") {
-        invalid = invalid || value < MIN_SPEED || value > MAX_SPEED;
-      } else if (action === "rewind" || action === "advance") {
-        invalid = invalid || value < 0;
-      } else if (action === "louder" || action === "softer") {
-        invalid = invalid || value <= 0 || value > 1;
-      }
-      normalized.value = invalid
-        ? (hasOwn(defaultValues, action) ? defaultValues[action] : 0)
-        : value;
-      normalized.disabled = coerceBoolean(normalized.disabled, false);
-      normalized.force = coerceBoolean(normalized.force, false);
-      return normalized;
+  function getActionValueError(action, value) {
+    var numericValue = finiteNumberOr(value, NaN);
+    if (!Number.isFinite(numericValue)) return "must be a finite number";
+    if (
+      (action === "slower" || action === "faster") &&
+      (numericValue <= 0 || numericValue > MAX_SPEED)
+    ) {
+      return "must be greater than 0 and no more than " + MAX_SPEED;
+    }
+    if (
+      action === "fast" &&
+      (numericValue < MIN_SPEED || numericValue > MAX_SPEED)
+    ) {
+      return "must be between " + MIN_SPEED + " and " + MAX_SPEED;
+    }
+    if (
+      (action === "rewind" || action === "advance") &&
+      numericValue < 0
+    ) {
+      return "must be zero or greater";
+    }
+    if (
+      (action === "louder" || action === "softer") &&
+      (numericValue <= 0 || numericValue > 1)
+    ) {
+      return "must be greater than 0 and no more than 1";
+    }
+    return null;
+  }
+
+  function sanitizeActionValue(action, value, fallback) {
+    if (!getActionValueError(action, value)) return Number(value);
+    if (!getActionValueError(action, fallback)) return Number(fallback);
+    if (Object.prototype.hasOwnProperty.call(defaultActionValues, action)) {
+      return defaultActionValues[action];
+    }
+    return 0;
+  }
+
+
+  function sanitizeStoredBindingValues(bindings) {
+    return (Array.isArray(bindings) ? bindings : []).filter(function(binding) {
+      return isPlainObject(binding) && KNOWN_ACTIONS.has(binding.action);
+    }).map(function(binding) {
+      var normalized = { action: binding.action };
+      ["code", "key"].forEach(function(key) {
+        if (typeof binding[key] === "string" && binding[key].length <= 128) {
+          normalized[key] = binding[key];
+        } else if (binding[key] === null) {
+          normalized[key] = null;
+        }
       });
+      // Numeric keys were the original backup format, before KeyboardEvent.code.
+      if (Number.isInteger(binding.key)) normalized.key = binding.key;
+      if (Number.isInteger(binding.keyCode)) normalized.keyCode = binding.keyCode;
+      normalized.value = sanitizeActionValue(binding.action, binding.value);
+      normalized.disabled = coerceBoolean(binding.disabled, false) ||
+        (binding.code === null && binding.key === null && binding.keyCode === null);
+      normalized.force = coerceBoolean(binding.force, false);
+      if (hasOwn(binding, "shiftKey")) normalized.shiftKey = binding.shiftKey === true;
+      if (hasOwn(binding, "predefined")) normalized.predefined = Boolean(binding.predefined);
+      return normalized;
+    });
   }
 
   function hasLegacyShortcutSettings(raw) {
@@ -822,17 +892,20 @@
     return bindings;
   }
 
-  function migrateLegacyBlacklist(raw) {
+  function migrateLegacyBlacklist(raw, report) {
     if (typeof raw.blacklist !== "string") return [];
     return raw.blacklist
       .split("\n")
       .map(function (line) {
         return line.trim();
       })
-      .filter(Boolean)
-      .map(function (pattern) {
-        return { pattern: pattern, enabled: false };
-      });
+      .map(function (pattern, index) {
+        if (!pattern) return null;
+        var rule = { pattern: pattern, enabled: false };
+        var normalized = normalizeSiteRule(rule);
+        reportRepair(report, "blacklist[" + index + "]", rule, normalized);
+        return normalized;
+      }).filter(Boolean);
   }
 
   function buildManagedStorageMutation(currentStorage, currentSettings) {
@@ -852,9 +925,22 @@
     };
   }
 
-  function expandStoredSettings(storage) {
+  function expandStoredSettings(storage, report, alreadyExpanded) {
     var raw = isPlainObject(storage) ? clonePlainData(storage) : {};
     var expanded = deepMergeDefaults(DEFAULT_SETTINGS, raw);
+    if (Array.isArray(raw.siteRules)) {
+      raw.siteRules = raw.siteRules.map(function(rule, index) {
+        var normalized = normalizeSiteRule(rule);
+        reportRepair(report, "siteRules[" + index + "]", rule, normalized);
+        return normalized;
+      }).filter(Boolean);
+    } else if (report && hasOwn(raw, "siteRules")) {
+      report.push("siteRules");
+    }
+    expanded.controllerLocation = normalizeLocation(expanded.controllerLocation, DEFAULT_SETTINGS.controllerLocation);
+    ["controllerButtons", "popupControllerButtons"].forEach(function(key) {
+      expanded[key] = normalizeButtonIds(expanded[key], DEFAULT_SETTINGS[key], key === "popupControllerButtons");
+    });
 
     if (
       !hasOwn(raw, "hideWithControls") &&
@@ -941,7 +1027,9 @@
       expanded.keyBindings = clonePlainData(DEFAULT_SETTINGS.keyBindings);
     }
 
-    if (raw.siteRulesFormat === SITE_RULES_DIFF_FORMAT) {
+    if (alreadyExpanded) {
+      expanded.siteRules = raw.siteRules || getDefaultSiteRules();
+    } else if (raw.siteRulesFormat === SITE_RULES_DIFF_FORMAT) {
       expanded.siteRules = expandSiteRules(
         raw.siteRules,
         raw.siteRulesMeta,
@@ -957,7 +1045,7 @@
       expanded.siteRules = migrateLegacyFullSiteRules(raw.siteRules);
     } else if (hasOwn(raw, "blacklist")) {
       expanded.siteRules = getDefaultSiteRules().concat(
-        migrateLegacyBlacklist(raw)
+        migrateLegacyBlacklist(raw, report)
       );
     } else {
       expanded.siteRules = getDefaultSiteRules();
@@ -966,6 +1054,17 @@
       .map(normalizeSiteRule)
       .filter(Boolean);
 
+    if (report) {
+      Object.keys(raw).forEach(function(key) {
+        if (MANAGED_SYNC_KEYS.indexOf(key) === -1 && key !== "lastSpeed" && key !== "speed") {
+          report.push(key);
+        }
+      });
+      DIFFABLE_OPTION_KEYS.concat(["lastSpeed"]).forEach(function(key) {
+        if (key === "siteRules" || key === "siteRulesMeta" || key === "siteRulesFormat") return;
+        if (hasOwn(raw, key)) reportRepair(report, key, raw[key], expanded[key]);
+      });
+    }
     return expanded;
   }
 
@@ -979,12 +1078,16 @@
       return false;
     }
 
-    var pattern = String(rule.pattern).trim();
+    if (typeof rule.pattern !== "string" || rule.pattern.length > 2048) return false;
+    var pattern = rule.pattern.trim();
     if (!pattern) {
       return false;
     }
 
     var regex;
+    if (pattern.startsWith("/") && pattern.lastIndexOf("/") === 0) {
+      return false;
+    }
     if (pattern.startsWith("/") && pattern.lastIndexOf("/") > 0) {
       try {
         var lastSlash = pattern.lastIndexOf("/");
@@ -1037,16 +1140,75 @@
     return mergedRule;
   }
 
-  function isSiteRuleDisabled(rule) {
-    return Boolean(
-      rule &&
-      (
-        rule.enabled === false ||
-        (typeof rule.enabled === "undefined" && rule.disableExtension === true)
-      )
-    );
+  function normalizeLocalSettings(local, report) {
+    var normalized = {};
+    if (!isPlainObject(local) || !hasOwn(local, "customButtonIcons")) return normalized;
+    var icons = local.customButtonIcons;
+    var clean = {};
+    if (isPlainObject(icons)) {
+      Object.keys(icons).forEach(function(id) {
+        var entry = icons[id];
+        var path = "customButtonIcons." + id;
+        if ((!BUTTON_IDS.has(id) && id !== "subtitleNudgeOn" && id !== "subtitleNudgeOff") ||
+            !isPlainObject(entry) || typeof entry.slug !== "string" || entry.slug.length > 128 ||
+            !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(entry.slug) || typeof entry.svg !== "string") {
+          if (report) report.push(path);
+          return;
+        }
+        var repaired = false;
+        var svg = typeof global.vscParseSvg === "function"
+          ? global.vscParseSvg(entry.svg, function() { repaired = true; }) : null;
+        if (!svg) {
+          if (report) report.push(path);
+          return;
+        }
+        clean[id] = { slug: entry.slug, svg: repaired ? svg.outerHTML : entry.svg };
+        reportRepair(report, path, entry, clean[id]);
+      });
+    } else if (report) {
+      report.push("customButtonIcons");
+    }
+    normalized.customButtonIcons = clean;
+    return normalized;
   }
 
+  function writeManagedStorageMutation(mutation, callback) {
+    function removeStaleKeys() {
+      if (!mutation.remove.length) {
+        callback(null);
+        return;
+      }
+      chrome.storage.sync.remove(mutation.remove, function () {
+        callback(chrome.runtime.lastError || null);
+      });
+    }
+
+    if (!Object.keys(mutation.set).length) {
+      removeStaleKeys();
+      return;
+    }
+
+    // Preserve old settings if writing their replacement fails.
+    chrome.storage.sync.set(mutation.set, function () {
+      if (chrome.runtime.lastError) {
+        callback(chrome.runtime.lastError);
+        return;
+      }
+      removeStaleKeys();
+    });
+  }
+
+  global.vscWriteManagedStorageMutation = writeManagedStorageMutation;
+  global.vscLegacyKeyCodeToCode = legacyKeyCodeToCode;
+  global.vscGetButtonIds = function () {
+    return Array.from(BUTTON_IDS);
+  };
+  global.vscGetDefaultButtonIds = function () {
+    return DEFAULT_BUTTONS.slice();
+  };
+  global.vscNormalizeLocalSettings = normalizeLocalSettings;
+  global.vscGetActionValueError = getActionValueError;
+  global.vscSanitizeActionValue = sanitizeActionValue;
   global.vscClonePlainData = clonePlainData;
   global.vscAreComparableValuesEqual = areComparableValuesEqual;
   global.vscDeepMergeDefaults = deepMergeDefaults;
@@ -1062,25 +1224,12 @@
   global.vscGetSiteRulesDiffFormat = function () {
     return SITE_RULES_DIFF_FORMAT;
   };
-  global.vscGetLegacySiteRulesDiffFormat = function () {
-    return LEGACY_SITE_RULES_DIFF_FORMAT;
-  };
   global.vscMatchSiteRule = function (url, rules) {
     var shared = global.SpeederShared && global.SpeederShared.siteRules;
+    // Every shipped page loads site-rules.js before using these accessors.
+    // Keep the legacy standalone fallback for callers outside those pages.
     return shared && typeof shared.matchSiteRule === "function"
       ? shared.matchSiteRule(url, rules)
       : mergeMatchingSiteRules(url, rules);
-  };
-  global.vscSiteRuleMatchesUrl = function (rule, url) {
-    var shared = global.SpeederShared && global.SpeederShared.siteRules;
-    return shared && typeof shared.siteRuleMatchesUrl === "function"
-      ? shared.siteRuleMatchesUrl(rule, url)
-      : siteRuleMatchesUrl(rule, url);
-  };
-  global.vscIsSiteRuleDisabled = function (rule) {
-    var shared = global.SpeederShared && global.SpeederShared.siteRules;
-    return shared && typeof shared.isSiteRuleDisabled === "function"
-      ? shared.isSiteRuleDisabled(rule)
-      : isSiteRuleDisabled(rule);
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

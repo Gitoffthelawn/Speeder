@@ -4,6 +4,7 @@ const { JSDOM } = require("jsdom");
 const vi = globalThis.vi;
 
 const ROOT = path.resolve(__dirname, "..", "..");
+let activeDom = null;
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -42,15 +43,18 @@ function applyJSDOMWindow(win) {
   win.Date = globalThis.Date;
   win.open = vi.fn();
   win.close = vi.fn();
+  win.confirm = vi.fn(() => true);
 }
 
 function loadHtmlString(html, options) {
   const config = options || {};
+  if (activeDom) activeDom.window.close();
   const dom = new JSDOM(html, {
     url: config.url || "https://example.org/",
     pretendToBeVisual: true,
     runScripts: "dangerously"
   });
+  activeDom = dom;
   applyJSDOMWindow(dom.window);
 }
 
@@ -244,6 +248,7 @@ function createChromeMock(options) {
   const storageOnChanged = createChromeEvent();
   const tabsOnActivated = createChromeEvent();
   const tabsOnUpdated = createChromeEvent();
+  const tabsOnRemoved = createChromeEvent();
   const runtimeOnMessage = createChromeEvent();
 
   const chrome = {
@@ -251,6 +256,12 @@ function createChromeMock(options) {
       lastError: null,
       getManifest: vi.fn(() => clone(config.manifest) || { version: "0.0.0-test" }),
       getURL: vi.fn((relPath) => `moz-extension://${relPath}`),
+      sendMessage: vi.fn((message, callback) => {
+        if (config.runtimeSendMessageImpl) {
+          return config.runtimeSendMessageImpl(message, callback);
+        }
+        if (callback) callback({ paused: false });
+      }),
       onMessage: runtimeOnMessage
     },
     browserAction: {
@@ -271,7 +282,8 @@ function createChromeMock(options) {
       }),
       create: vi.fn(),
       onActivated: tabsOnActivated,
-      onUpdated: tabsOnUpdated
+      onUpdated: tabsOnUpdated,
+      onRemoved: tabsOnRemoved
     },
     storage: {
       onChanged: storageOnChanged,
@@ -309,6 +321,5 @@ module.exports = {
   installCommonWindowMocks,
   loadHtmlFile,
   loadHtmlString,
-  readWorkspaceFile,
-  workspacePath
+  readWorkspaceFile
 };

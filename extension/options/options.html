@@ -8,6 +8,7 @@
     <script src="../shared/controller-utils.js"></script>
     <script src="../shared/key-bindings.js"></script>
     <script src="../shared/settings-core.js"></script>
+    <script src="../shared/site-rules.js"></script>
     <script src="../shared/popup-controls.js"></script>
     <script src="../shared/ui-icons.js"></script>
     <script src="lucide-client.js"></script>
@@ -468,8 +469,8 @@
               <div class="section-heading">
                 <h3>Hover control bar</h3>
                 <p class="section-intro">
-                  Drag blocks to reorder. Move between Active and Available to
-                  show or hide buttons.
+                  Drag blocks or use arrow keys to reorder. Press a block to
+                  move it between Active and Available.
                 </p>
               </div>
               <div class="cb-editor">
@@ -546,7 +547,7 @@
                     rel="noopener noreferrer"
                     >Lucide</a
                   >
-                  set (fetched from jsDelivr). Custom icons are cached in local
+                  set (bundled with Speeder). Custom icons are cached in local
                   storage and included when you export settings. Subtitle nudge
                   icons use two menu entries (enabled and disabled), not the bar
                   block id
@@ -591,7 +592,7 @@
               <div
                 id="lucideIconResults"
                 class="lucide-icon-results"
-                role="listbox"
+                role="group"
                 aria-label="Matching Lucide icons"
               ></div>
               <p id="lucideIconStatus" class="lucide-icon-status" aria-live="polite"></p>
@@ -667,6 +668,7 @@
                   placeholder="e.g., youtube.com or /regex/gi"
                   aria-label="Site rule URL pattern"
                 />
+                <p class="site-pattern-feedback" role="status" hidden></p>
               </div>
               <button type="button" class="remove-site-rule">Remove</button>
             </div>
@@ -943,8 +945,8 @@
                   <label class="site-override-lead">
                     <span
                       >Override in-player control bar for this site<br /><em
-                        >Same idea as Hover control bar: drag blocks between
-                        Active and Available for matching URLs only.</em
+                        >Drag blocks or use the keyboard to arrange Active and
+                        Available buttons for matching URLs only.</em
                       ></span
                     >
                     <input type="checkbox" class="override-controlbar" />
@@ -998,8 +1000,8 @@
                   <label class="site-override-lead">
                     <span
                       >Override shortcuts for this site<br /><em
-                        >Add shortcuts from the menu; none by default. Leave off
-                        to use global Shortcuts.</em
+                        >A site shortcut replaces global bindings for the same
+                        action; other global shortcuts remain active.</em
                       ></span
                     >
                     <input type="checkbox" class="override-shortcuts" />
@@ -1029,6 +1031,7 @@
             <button id="restore">Restore Defaults</button>
             <button id="exportSettings">Export Settings</button>
             <button id="importSettings">Import Settings</button>
+            <button id="copyDiagnostics">Copy Diagnostics</button>
           </div>
 
           <div id="status" role="status" aria-live="polite"></div>
@@ -1037,11 +1040,11 @@
         <section id="faq" class="settings-card info-card">
           <h4>Extension controls not appearing?</h4>
           <p>
-            This extension only works with HTML5 audio and video. If the
-            controls never appear, you may be looking at Flash content instead.
-            Right-click the player to check: if the menu mentions Flash, that
-            is the issue. Most sites will fall back to HTML5 when Flash is not
-            available, so disabling Flash in the browser can help.
+            Speeder works with HTML5 video and, when enabled above, HTML5 audio.
+            Check that the current site is enabled, then use the popup&rsquo;s
+            &ldquo;Rescan page for videos&rdquo; action after a player loads
+            dynamically. Browser-internal pages and players that do not expose
+            HTML5 media to extensions cannot be controlled.
           </p>
         </section>
 

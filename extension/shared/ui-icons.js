@@ -69,47 +69,85 @@ function vscClearElement(el) {
   }
 }
 
+var VSC_SVG_MAX_LENGTH = 32768;
+var VSC_SVG_MAX_NODES = 512;
+var vscSvgElements = new Set([
+  "svg", "g", "path", "circle", "ellipse", "line", "polyline", "polygon",
+  "rect", "title", "desc"
+]);
+var vscSvgAttributes = new Set([
+  "viewBox", "width", "height", "fill", "stroke", "stroke-width",
+  "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray",
+  "stroke-dashoffset", "stroke-opacity", "fill-opacity", "fill-rule", "clip-rule",
+  "opacity", "d", "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "y1",
+  "x2", "y2", "points", "transform", "class", "aria-hidden", "focusable", "role"
+]);
+
 function vscSanitizeSvgTree(svg) {
-  if (!svg || String(svg.tagName).toLowerCase() !== "svg") return null;
+  if (!svg || svg.localName !== "svg" || svg.namespaceURI !== VSC_SVG_NS) return null;
+  if (svg.outerHTML.length > VSC_SVG_MAX_LENGTH) return null;
+  var nodes = [svg];
+  for (var n = 0; n < nodes.length; n++) {
+    for (var child = nodes[n].firstChild; child; child = child.nextSibling) {
+      nodes.push(child);
+      if (nodes.length > VSC_SVG_MAX_NODES) return null;
+    }
+  }
 
-  svg.querySelectorAll("script, style, foreignObject").forEach(function (n) {
-    n.remove();
-  });
-
-  [svg].concat(Array.from(svg.querySelectorAll("*"))).forEach(function (el) {
+  nodes.forEach(function (el) {
+    if (el.nodeType !== 1) return;
+    if (el.namespaceURI !== VSC_SVG_NS || !vscSvgElements.has(el.localName)) {
+      el.remove();
+      return;
+    }
     for (var i = el.attributes.length - 1; i >= 0; i--) {
       var attr = el.attributes[i];
-      var name = attr.name.toLowerCase();
+      var name = attr.name;
       var val = attr.value;
-      if (name.indexOf("on") === 0) {
-        el.removeAttribute(attr.name);
+      if (el === svg && name === "xmlns" && val === VSC_SVG_NS &&
+          attr.namespaceURI === "http://www.w3.org/2000/xmlns/") continue;
+      var valid = !attr.namespaceURI && vscSvgAttributes.has(name);
+      if (name === "class") {
+        if (!valid || !/^[A-Za-z0-9 _-]{0,256}$/.test(val)) el.removeAttributeNode(attr);
         continue;
       }
-      if (
-        (name === "href" || name === "xlink:href") &&
-        /^\s*javascript:/i.test(val)
-      ) {
-        el.removeAttribute(attr.name);
+      valid = valid && !/[\\&<:]/.test(val) && !/url/i.test(val);
+      if (name === "transform") {
+        valid = valid && /^(\s*(?:matrix|translate|scale|rotate|skewX|skewY)\(\s*[-+\d.eE,\s]+\)\s*)+$/.test(val);
+      } else {
+        valid = valid && val.indexOf("(") === -1;
       }
+      if (name === "fill" || name === "stroke") {
+        valid = valid && /^(?:none|currentColor|#[0-9a-f]{3,4}|#[0-9a-f]{6}|#[0-9a-f]{8}|[a-z]+)$/i.test(val);
+      }
+      if (!valid) el.removeAttributeNode(attr);
     }
   });
+  return svg;
+}
 
-  svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", VSC_SVG_NS);
-  svg.setAttribute("aria-hidden", "true");
+function vscParseSvg(svgText, onRepair) {
+  if (typeof svgText !== "string" || svgText.length > VSC_SVG_MAX_LENGTH) return null;
+  var clean = svgText.trim();
+  if (!clean || !/<svg[\s/>]/i.test(clean)) return null;
+  // Older backups omitted the default namespace. Interpret those as SVG while
+  // still rejecting explicitly foreign roots and namespaced child elements.
+  clean = clean.replace(/<svg(?=[\s/>])([^>]*?)(\/?)>/, function (tag, attrs, closing) {
+    return /\bxmlns\s*=/.test(attrs) ? tag : '<svg xmlns="' + VSC_SVG_NS + '"' + attrs + closing + '>';
+  });
+  var parsed = new DOMParser().parseFromString(clean, "image/svg+xml");
+  if (parsed.querySelector("parsererror")) return null;
+  var before = parsed.documentElement.outerHTML;
+  var svg = vscSanitizeSvgTree(parsed.documentElement);
+  if (onRepair && (!svg || svg.outerHTML !== before)) onRepair();
   return svg;
 }
 
 function vscCreateSvgNode(doc, svgText) {
-  if (!doc || !svgText || typeof svgText !== "string") return null;
-  var clean = String(svgText).replace(/\0/g, "").trim();
-  if (!clean || !/<svg[\s>]/i.test(clean)) return null;
-
-  var parsed = new DOMParser().parseFromString(clean, "image/svg+xml");
-  if (parsed.querySelector("parsererror")) return null;
-
-  var svg = vscSanitizeSvgTree(parsed.querySelector("svg"));
+  if (!doc) return null;
+  var svg = vscParseSvg(svgText);
   if (!svg) return null;
-
+  svg.setAttribute("aria-hidden", "true");
   return doc.importNode(svg, true);
 }
 
