@@ -3176,6 +3176,84 @@ describe("inject.js media/controller lifecycle regressions", () => {
     expect(scan).not.toHaveBeenCalled();
   });
 
+  it("never reads browser-internal shadow roots on built-in controls", async () => {
+    bootInject();
+    await settleLifecycle();
+    // Firefox 150 exposes UA widget roots through this privileged getter.
+    // Even touching a retained root's host after widget teardown can crash
+    // Gecko, so reject these elements before reading either shadow getter.
+    const readInternalRoot = vi.fn(() => ({}));
+    const elements = [
+      "input", "textarea", "select", "option", "button", "video", "audio",
+      "img", "iframe", "object", "embed", "progress", "meter", "details"
+    ].map((tag) => document.createElement(tag));
+    elements.push(document.createElementNS("http://www.w3.org/2000/svg", "svg"));
+    elements.push(document.createElementNS("http://www.w3.org/2000/svg", "custom-player"));
+    for (const element of elements) {
+      Object.defineProperties(element, {
+        openOrClosedShadowRoot: { get: readInternalRoot },
+        shadowRoot: { get: readInternalRoot }
+      });
+      expect(window.getElementShadowRoot(element)).toBeNull();
+    }
+    expect(readInternalRoot).not.toHaveBeenCalled();
+  });
+
+  it.each(["active", "global-disabled", "site-disabled"])(
+    "ignores internal input roots during insertion, navigation and removal (%s)", async (state) => {
+      vi.useFakeTimers();
+      let internalRoot;
+      const readInternalRoot = vi.fn(() => internalRoot);
+      const readInternalHost = vi.fn();
+      bootInject({
+        syncData: state === "global-disabled" ? { enabled: false } :
+          state === "site-disabled" ? { siteRules: [{ pattern: "example.org", enabled: false }] } : {},
+        configureWindow(win) {
+          win.document.body.innerHTML = '<form><input type="text"><input type="search"></form>';
+          internalRoot = win.document.createElement("div").attachShadow({ mode: "closed" });
+          const input = win.document.querySelector("input");
+          readInternalHost.mockImplementation(() => input);
+          Object.defineProperty(internalRoot, "host", { get: readInternalHost });
+          Object.defineProperty(win.HTMLInputElement.prototype, "openOrClosedShadowRoot", {
+            get: readInternalRoot
+          });
+        }
+      });
+      await settleLifecycle();
+      for (let i = 0; i < 3; i++) {
+        document.querySelector("form").innerHTML = '<input type="url"><input type="text">';
+        window.history.pushState({}, "", "/route-" + i);
+        window.dispatchEvent(new Event("popstate"));
+        await vi.advanceTimersByTimeAsync(1100);
+      }
+      document.querySelector("form").remove();
+      await settleLifecycle();
+      expect(readInternalRoot).not.toHaveBeenCalled();
+      expect(readInternalHost).not.toHaveBeenCalled();
+      expect(window.vscObservedRootList).toHaveLength(0);
+    }
+  );
+
+  it.each(["div", "span", "section", "custom-player"])(
+    "still discovers closed page-created shadow media on %s", async (tag) => {
+      let root;
+      let video;
+      bootInject({ configureWindow(win) {
+        const host = win.document.createElement(tag);
+        root = host.attachShadow({ mode: "closed" });
+        Object.defineProperty(host, "openOrClosedShadowRoot", { value: root });
+        video = win.document.createElement("video");
+        video.src = "https://example.org/closed.mp4";
+        root.appendChild(video);
+        win.document.body.appendChild(host);
+      } });
+      await settleLifecycle();
+      expect(video.vsc.div.getRootNode()).toBe(root);
+      document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyD", key: "d" }));
+      expect(video.playbackRate).toBe(1.1);
+    }
+  );
+
   it("keeps challenge mutation checks constant-time for non-elements and childless elements", async () => {
     vi.useFakeTimers();
     bootInject();
