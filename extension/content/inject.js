@@ -505,6 +505,10 @@ var MAX_SPEED = Number(keyBindingUtils.MAX_SPEED) || 16;
 var YT_NATIVE_MIN = 0.25;
 var YT_NATIVE_MAX = 2.0;
 var YT_NATIVE_STEP = 0.05;
+var vscAuthorShadowHostNames = new Set([
+  "article", "aside", "blockquote", "body", "div", "footer", "h1", "h2",
+  "h3", "h4", "h5", "h6", "header", "main", "nav", "p", "section", "span"
+]);
 var vscObservedRoots = new WeakSet();
 var vscShadowBridgeListenerRoots = new WeakSet();
 var vscObservedRootList = [];
@@ -3468,7 +3472,20 @@ function isShadowRootNode(node) {
 }
 
 function getElementShadowRoot(element) {
-  if (!element) return null;
+  // Only HTML author-shadow hosts may be inspected. Firefox 150 also exposes
+  // UA widget roots (including inputs/media) via openOrClosedShadowRoot:
+  // https://bugzilla.mozilla.org/show_bug.cgi?id=2035665
+  // Retaining those roots and reading .host after widget teardown can crash
+  // Gecko; a try/catch cannot catch a native crash. Guard before either getter.
+  if (
+    !element ||
+    element.namespaceURI !== "http://www.w3.org/1999/xhtml" ||
+    !element.localName ||
+    (!vscAuthorShadowHostNames.has(element.localName) &&
+      element.localName.indexOf("-") === -1)
+  ) {
+    return null;
+  }
   try {
     return element.openOrClosedShadowRoot || element.shadowRoot || null;
   } catch (_error) {
